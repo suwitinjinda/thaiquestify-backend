@@ -1,0 +1,319 @@
+const express = require('express');
+const router = express.Router();
+const auth = require('../middleware/auth');
+const User = require('../models/User');
+const DailyQuest = require('../models/DailyQuest');
+
+// Helper function สำหรับคำนวณ streak multiplier
+const getStreakMultiplier = (streak) => {
+    if (streak >= 30) return 2.5;
+    if (streak >= 14) return 2.0;
+    if (streak >= 7) return 1.5;
+    return 1.0;
+};
+
+// Helper function สำหรับคำนวณเวลารีเซ็ต
+const calculateNextReset = () => {
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 0, 0, 0);
+
+    const diff = tomorrow - now;
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+
+    return {
+        time: `${hours} ชั่วโมง ${minutes} นาที`,
+        hours,
+        minutes,
+        timestamp: tomorrow
+    };
+};
+
+// @route   GET /api/v2/streak/stats
+// @desc    Get user streak statistics
+// @access  Private
+router.get('/v2/streak/stats', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
+            });
+        }
+
+        // ตรวจสอบและรีเซ็ต daily quests ถ้าจำเป็น
+        const today = new Date().toDateString();
+        const lastReset = user.streakStats?.lastResetDate
+            ? new Date(user.streakStats.lastResetDate).toDateString()
+            : null;
+
+        if (lastReset !== today) {
+            // รีเซ็ต daily quests
+            if (user.streakStats) {
+                user.streakStats.dailyQuestsCompletedToday = 0;
+                user.streakStats.lastResetDate = new Date();
+            }
+
+            if (user.dailyQuestProgress) {
+                user.dailyQuestProgress.date = new Date();
+                user.dailyQuestProgress.quests = [];
+                user.dailyQuestProgress.isStreakMaintained = false;
+            }
+
+            await user.save();
+        }
+
+        const stats = {
+            currentStreak: user.streakStats?.currentStreak || 0,
+            longestStreak: user.streakStats?.longestStreak || 0,
+            dailyCompleted: user.streakStats?.dailyQuestsCompletedToday || 0,
+            totalPoints: user.streakStats?.totalPointsEarned || 0,
+            nextReset: calculateNextReset(),
+            multiplier: getStreakMultiplier(user.streakStats?.currentStreak || 0)
+        };
+
+        res.json({
+            success: true,
+            data: stats
+        });
+    } catch (error) {
+        console.error('Error getting streak stats:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Server error'
+        });
+    }
+});
+
+// @route   GET /api/v2/daily-quests/today
+// @desc    Get today's daily quests
+// @access  Private
+router.get('/v2/daily-quests/today', auth, async (req, res) => {
+    try {
+        // ดึง daily quests จาก database
+        const dailyQuests = await DailyQuest.find({ isActive: true }).sort({ displayOrder: 1 });
+
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
+            });
+        }
+
+        const questsWithProgress = dailyQuests.map(quest => {
+            const completed = user.dailyQuestProgress?.quests?.some(
+                q => q.questId === quest._id.toString() && q.completed
+            ) || false;
+
+            return {
+                _id: quest._id,
+                name: quest.name,
+                description: quest.description,
+                points: quest.points,
+                icon: quest.icon,
+                requirements: quest.requirements,
+                isCompleted: completed,
+                isAvailable: quest.isAvailableNow(),
+                progress: completed ? 'completed' : 'pending'
+            };
+        });
+
+        res.json({
+            success: true,
+            data: questsWithProgress,
+            summary: {
+                total: questsWithProgress.length,
+                completed: questsWithProgress.filter(q => q.isCompleted).length,
+                available: questsWithProgress.filter(q => q.isAvailable).length
+            }
+        });
+    } catch (error) {
+        console.error('Error getting daily quests:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Server error'
+        });
+    }
+});
+
+// @route   POST /api/v2/daily-quests/:questId/complete
+// @desc    Complete a daily quest
+// @access  Private
+router.post('/v2/daily-quests/:questId/complete', auth, async (req, res) => {
+    try {
+        const quest = await DailyQuest.findById(req.params.questId);
+        if (!quest) {
+            return res.status(404).json({
+                success: false,
+                error: 'Quest not found'
+            });
+        }
+
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
+            });
+        }
+
+        // ตรวจสอบว่า quest นี้ทำไปแล้วหรือยัง
+        const alreadyCompleted = user.dailyQuestProgress?.quests?.some(
+            q => q.questId === req.params.questId && q.completed
+        );
+
+        if (alreadyCompleted) {
+            return res.status(400).json({
+                success: false,
+                error: 'Quest already completed today'
+            });
+        }
+
+        // ตรวจสอบว่า quest นี้พร้อมใช้งาน
+        if (!quest.isAvailableNow()) {
+            return res.status(400).json({
+                success: false,
+                error: 'Quest is not available at this time'
+            });
+        }
+
+        // อัพเดต streak stats
+        const today = new Date().toDateString();
+        const lastQuestDate = user.streakStats?.lastQuestDate
+            ? new Date(user.streakStats.lastQuestDate).toDateString()
+            : null;
+
+        const isFirstQuestOfDay = lastQuestDate !== today;
+
+        // Initialize streakStats ถ้ายังไม่มี
+        if (!user.streakStats) {
+            user.streakStats = {
+                currentStreak: 0,
+                longestStreak: 0,
+                lastQuestDate: null,
+                totalQuestsCompleted: 0,
+                totalPointsEarned: 0,
+                dailyQuestsCompletedToday: 0,
+                lastResetDate: null
+            };
+        }
+
+        // อัพเดต streak
+        if (isFirstQuestOfDay) {
+            user.streakStats.currentStreak += 1;
+            if (user.streakStats.currentStreak > user.streakStats.longestStreak) {
+                user.streakStats.longestStreak = user.streakStats.currentStreak;
+            }
+        }
+
+        // คำนวณคะแนนด้วย multiplier
+        const streakMultiplier = getStreakMultiplier(user.streakStats.currentStreak);
+        const pointsEarned = Math.floor(quest.points * streakMultiplier);
+
+        // อัพเดต statistics
+        user.streakStats.dailyQuestsCompletedToday += 1;
+        user.streakStats.totalQuestsCompleted += 1;
+        user.streakStats.totalPointsEarned += pointsEarned;
+        user.streakStats.lastQuestDate = new Date();
+
+        // อัพเดต daily progress
+        if (!user.dailyQuestProgress) {
+            user.dailyQuestProgress = {
+                date: new Date(),
+                quests: [],
+                isStreakMaintained: false
+            };
+        }
+
+        user.dailyQuestProgress.quests.push({
+            questId: req.params.questId,
+            completed: true,
+            completedAt: new Date(),
+            points: pointsEarned
+        });
+
+        // เพิ่มเข้า quest history
+        if (!user.questHistory) {
+            user.questHistory = [];
+        }
+
+        user.questHistory.push({
+            questTemplateId: req.params.questId,
+            questType: 'daily',
+            completedAt: new Date(),
+            pointsEarned: pointsEarned,
+            streakMultiplier: streakMultiplier,
+            status: 'completed'
+        });
+
+        await user.save();
+
+        // อัพเดต quest statistics
+        quest.totalCompletions = (quest.totalCompletions || 0) + 1;
+        quest.totalPointsGiven = (quest.totalPointsGiven || 0) + pointsEarned;
+        await quest.save();
+
+        res.json({
+            success: true,
+            data: {
+                questId: req.params.questId,
+                pointsEarned,
+                streakMultiplier,
+                newStreak: user.streakStats.currentStreak,
+                isFirstQuestOfDay,
+                totalPoints: user.streakStats.totalPointsEarned,
+                message: `ทำเควสสำเร็จ! คุณได้รับ ${pointsEarned} คะแนน`
+            }
+        });
+    } catch (error) {
+        console.error('Error completing quest:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Server error'
+        });
+    }
+});
+
+// @route   GET /api/v2/streak/leaderboard
+// @desc    Get streak leaderboard
+// @access  Private
+router.get('/v2/streak/leaderboard', auth, async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 10;
+
+        const users = await User.find({
+            'streakStats.currentStreak': { $gt: 0 }
+        })
+            .sort({ 'streakStats.currentStreak': -1, 'streakStats.totalPointsEarned': -1 })
+            .limit(limit)
+            .select('name photo streakStats.currentStreak streakStats.totalPointsEarned');
+
+        const leaderboard = users.map((user, index) => ({
+            rank: index + 1,
+            name: user.name,
+            photo: user.photo,
+            streak: user.streakStats?.currentStreak || 0,
+            totalPoints: user.streakStats?.totalPointsEarned || 0
+        }));
+
+        res.json({
+            success: true,
+            data: leaderboard,
+            total: await User.countDocuments({ 'streakStats.currentStreak': { $gt: 0 } }),
+            page: 1,
+            limit
+        });
+    } catch (error) {
+        console.error('Error getting leaderboard:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Server error'
+        });
+    }
+});
+
+module.exports = router;
