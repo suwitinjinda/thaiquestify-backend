@@ -23,6 +23,23 @@ const userSchema = new mongoose.Schema({
     sparse: true
   },
 
+  // Social integrations (for quest verification; NOT login)
+  integrations: {
+    tiktok: {
+      connectedAt: { type: Date, default: null },
+      openId: { type: String, default: null },
+      unionId: { type: String, default: null },
+      displayName: { type: String, default: null },
+      avatarUrl: { type: String, default: null },
+
+      // NOTE: In production, store tokens encrypted / in a secrets store.
+      accessToken: { type: String, default: null },
+      refreshToken: { type: String, default: null },
+      expiresAt: { type: Date, default: null },
+      scope: { type: String, default: null },
+    },
+  },
+
   // ข้อมูลการสมัคร (existing)
   signupMethod: {
     type: String,

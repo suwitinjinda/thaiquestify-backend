@@ -54,9 +54,11 @@ mongoose.connect(MONGODB_URI, {
 const authRoutes = require('./routes/auth');
 // ... (imports for other routes) ...
 const debugRoutes = require('./routes/debug');
+const integrationsRoutes = require('./routes/integrations');
 
 // ********** ADD NEW STREAK ROUTES *********
 app.use('/api/auth', authRoutes);
+app.use('/api/integrations', integrationsRoutes);
 app.use('/api/quests', questRoutes);
 // ... (use for other routes) ...
 app.use('/api/debug', debugRoutes);
@@ -166,6 +168,134 @@ app.get('/auth/google/callback', (req, res) => {
   // Set content type to HTML and send the response
   res.set('Content-Type', 'text/html');
   return res.send(htmlResponse);
+});
+
+// ===== TIKTOK CALLBACK (CONNECT FOR QUESTS) =====
+app.get('/auth/tiktok/callback', async (req, res) => {
+  const { code, error, error_description, state } = req.query;
+
+  const deepLinkBase = 'thaiquestify://integrations/tiktok';
+
+  if (error) {
+    const deepLinkUrl =
+      `${deepLinkBase}?success=0&error=${encodeURIComponent(error)}` +
+      `&description=${encodeURIComponent(error_description || 'TikTok authentication failed')}`;
+    return res.redirect(302, deepLinkUrl);
+  }
+
+  if (!code || !state) {
+    return res.redirect(302, `${deepLinkBase}?success=0&error=missing_code_or_state`);
+  }
+
+  // Verify signed state to get userId
+  let decoded;
+  try {
+    const JWT_SECRET = process.env.JWT_SECRET || 'your-fallback-secret-key-for-development';
+    decoded = require('jsonwebtoken').verify(state, JWT_SECRET);
+
+    if (!decoded || decoded.purpose !== 'tiktok_connect' || !decoded.userId) {
+      return res.redirect(302, `${deepLinkBase}?success=0&error=invalid_state`);
+    }
+  } catch (e) {
+    return res.redirect(302, `${deepLinkBase}?success=0&error=invalid_state`);
+  }
+
+  const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY;
+  const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET;
+  const TIKTOK_REDIRECT_URI =
+    process.env.TIKTOK_REDIRECT_URI || 'https://thaiquestify.com/auth/tiktok/callback';
+
+  if (!TIKTOK_CLIENT_KEY || !TIKTOK_CLIENT_SECRET) {
+    return res.redirect(302, `${deepLinkBase}?success=0&error=missing_tiktok_credentials`);
+  }
+
+  try {
+    // Exchange code -> tokens (TikTok OAuth v2)
+    const tokenParams = new URLSearchParams({
+      client_key: TIKTOK_CLIENT_KEY,
+      client_secret: TIKTOK_CLIENT_SECRET,
+      code: code,
+      grant_type: 'authorization_code',
+      redirect_uri: TIKTOK_REDIRECT_URI,
+    }).toString();
+
+    const tokenResp = await axios.post(
+      'https://open.tiktokapis.com/v2/oauth/token/',
+      tokenParams,
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const tokenData = tokenResp.data || {};
+    const accessToken = tokenData.access_token;
+    const refreshToken = tokenData.refresh_token;
+    const expiresIn = tokenData.expires_in;
+    const openId = tokenData.open_id;
+    const scope = tokenData.scope;
+
+    // Fetch basic user info
+    let displayName = null;
+    let avatarUrl = null;
+    let unionId = null;
+
+    try {
+      const infoResp = await axios.get(
+        'https://open.tiktokapis.com/v2/user/info/?fields=open_id,union_id,display_name,avatar_url',
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+
+      const u = infoResp.data?.data?.user || {};
+      displayName = u.display_name || null;
+      avatarUrl = u.avatar_url || null;
+      unionId = u.union_id || null;
+    } catch (e) {
+      console.log('⚠️ TikTok user info fetch failed:', e?.message || e);
+    }
+
+    const User = require('./models/User');
+    const user = await User.findById(decoded.userId);
+
+    if (user) {
+      user.integrations = user.integrations || {};
+      user.integrations.tiktok = {
+        connectedAt: new Date(),
+        openId: openId || null,
+        unionId: unionId || null,
+        displayName: displayName || null,
+        avatarUrl: avatarUrl || null,
+        accessToken: accessToken || null,
+        refreshToken: refreshToken || null,
+        expiresAt: expiresIn ? new Date(Date.now() + Number(expiresIn) * 1000) : null,
+        scope: scope || null,
+      };
+      await user.save();
+    }
+
+    const deepLinkUrl = `${deepLinkBase}?success=1`;
+
+    // Serve HTML redirect (most reliable on mobile)
+    const htmlResponse = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Redirecting to App</title>
+          <meta http-equiv="refresh" content="0; url=${deepLinkUrl}">
+          <style>body{font-family:sans-serif;text-align:center;padding:50px}</style>
+        </head>
+        <body>
+          <h1>TikTok Connected!</h1>
+          <p>Redirecting you back to the ThaiQuestify app...</p>
+          <a href="${deepLinkUrl}">Click here if you are not redirected automatically.</a>
+          <script>window.location.replace("${deepLinkUrl}");</script>
+        </body>
+      </html>
+    `;
+
+    res.set('Content-Type', 'text/html');
+    return res.send(htmlResponse);
+  } catch (e) {
+    console.error('❌ TikTok callback error:', e?.response?.data || e?.message || e);
+    return res.redirect(302, `${deepLinkBase}?success=0&error=token_exchange_failed`);
+  }
 });
 
 // ===========================================
