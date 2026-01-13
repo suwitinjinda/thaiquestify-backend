@@ -1,0 +1,10 @@
+// data/tourist-attractions/uthai-thani.js
+const uthaiThaniAttractions = [
+  { id: 'uthai-thani-001', name: 'วิถีชีวิตชาวแพลุ่มน้ำสะแกกรัง', nameEn: 'Floating House Community on Sakae Krang River', description: 'สัมผัสวิถีชีวิตของชาวแพที่อาศัยอยู่ริมแม่น้ำสะแกกรัง เป็นภาพที่น่าตื่นตาตื่นใจสำหรับนักท่องเที่ยว', coordinates: { latitude: 15.3833, longitude: 100.0167 }, category: 'other', categories: ['other', 'recommended'], province: 'อุทัยธานี', district: 'อำเภอเมืองอุทัยธานี', address: 'อำเภอเมืองอุทัยธานี จังหวัดอุทัยธานี', checkInRadius: 200, thumbnail: null, isActive: true, createdAt: new Date(), updatedAt: new Date() },
+  { id: 'uthai-thani-002', name: 'ถนนคนเดินตรอกโรงยา', nameEn: 'Trok Rong Ya Walking Street', description: 'รวบรวมเรื่องราวในอดีตให้นักท่องเที่ยวมาเดินชมและถ่ายภาพในบรรยากาศย้อนยุค เปิดทุกวันเสาร์', coordinates: { latitude: 15.3800, longitude: 100.0100 }, category: 'other', categories: ['other', 'recommended'], province: 'อุทัยธานี', district: 'อำเภอเมืองอุทัยธานี', address: 'อำเภอเมืองอุทัยธานี จังหวัดอุทัยธานี', checkInRadius: 150, thumbnail: null, isActive: true, createdAt: new Date(), updatedAt: new Date() },
+  { id: 'uthai-thani-003', name: 'เขตรักษาพันธุ์สัตว์ป่าห้วยขาแข้ง', nameEn: 'Huai Kha Khaeng Wildlife Sanctuary', description: 'เป็นพื้นที่อนุรักษ์ธรรมชาติที่สำคัญของประเทศไทย', coordinates: { latitude: 15.5000, longitude: 99.5000 }, category: 'park', categories: ['park', 'recommended'], province: 'อุทัยธานี', district: 'อำเภอลานสัก', address: 'อำเภอลานสัก จังหวัดอุทัยธานี', checkInRadius: 200, thumbnail: null, isActive: true, createdAt: new Date(), updatedAt: new Date() }
+];
+const getAllActiveAttractions = () => uthaiThaniAttractions.filter(a => a.isActive);
+const getAttractionById = (id) => uthaiThaniAttractions.find(a => a.id === id);
+const getAttractionsByCategory = (category) => uthaiThaniAttractions.filter(a => a.isActive && (a.category === category || a.categories.includes(category)));
+module.exports = { uthaiThaniAttractions, getAllActiveAttractions, getAttractionById, getAttractionsByCategory };

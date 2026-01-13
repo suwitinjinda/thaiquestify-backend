@@ -1,4 +1,7 @@
 // routes/userGeneratedQuests.js
+// Routes สำหรับ Job Postings (งาน/รับจ้าง)
+// Collection: 'jobpostings' - สำหรับงานที่ผู้ใช้สร้าง (ซ่อมแซม, ต่อเติม, งานใช้แรงงาน, etc.)
+// แยกจาก 'socialquests' (เควสจากชุมชน - TikTok follow, share URL)
 const express = require('express');
 const router = express.Router();
 const { auth } = require('../middleware/auth');

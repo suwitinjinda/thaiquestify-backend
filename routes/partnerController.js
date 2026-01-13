@@ -44,8 +44,8 @@ exports.registerShop = async (req, res) => {
       });
     }
 
-    // Check if user is partner
-    if (req.user.userType !== 'partner') {
+    // Check if user is partner (has partnerId)
+    if (!req.user.partnerId) {
       return res.status(403).json({
         success: false,
         message: 'Access denied. Only partners can register shops.'
@@ -105,8 +105,8 @@ exports.getPartnerShops = async (req, res) => {
   try {
     const partnerId = req.user.id;
 
-    // Check if user is partner
-    if (req.user.userType !== 'partner') {
+    // Check if user is partner (has partnerId)
+    if (!req.user.partnerId) {
       return res.status(403).json({
         success: false,
         message: 'Access denied. Only partners can access shops.'
@@ -196,8 +196,8 @@ exports.getPartnerDashboard = async (req, res) => {
   try {
     const partnerId = req.user.id;
 
-    // Check if user is partner
-    if (req.user.userType !== 'partner') {
+    // Check if user is partner (has partnerId)
+    if (!req.user.partnerId) {
       return res.status(403).json({
         success: false,
         message: 'Access denied. Only partners can access dashboard.'

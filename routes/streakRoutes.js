@@ -88,9 +88,18 @@ router.get('/v2/daily-quests/today', auth, async (req, res) => {
     const quests = await DailyQuestService.getTodaysQuests(req.user.id);
 
     const completedCount = quests.filter(q => q.isCompleted).length;
-
-    console.log("quest: ", quests)
-    console.log("completedCount: ", completedCount)
+    const pendingQuests = quests.filter(q => q.participationStatus === 'pending' || q.progress === 'pending_review');
+    
+    console.log(`📋 [DAILY_QUESTS_API] Total quests: ${quests.length}, Completed: ${completedCount}, Pending: ${pendingQuests.length}`);
+    if (pendingQuests.length > 0) {
+      console.log(`📋 [DAILY_QUESTS_API] Pending quests:`, pendingQuests.map(q => ({
+        id: q._id,
+        name: q.name,
+        participationStatus: q.participationStatus,
+        progress: q.progress,
+        isCompleted: q.isCompleted
+      })));
+    }
 
     res.json({
       success: true,
@@ -98,7 +107,8 @@ router.get('/v2/daily-quests/today', auth, async (req, res) => {
       summary: {
         total: quests.length,
         completed: completedCount,
-        available: quests.filter(q => q.isAvailable).length
+        available: quests.filter(q => q.isAvailable).length,
+        pending: pendingQuests.length
       }
     });
 
@@ -176,6 +186,142 @@ router.post('/v2/streak/initialize', auth, async (req, res) => {
     });
   } catch (error) {
     console.error('Error initializing streak:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Check-in endpoint - Simple check-in without daily quest
+router.post('/v2/check-in', auth, async (req, res) => {
+  try {
+    console.log('📍 Check-in request for user:', req.user.id);
+
+    const User = require('../models/User');
+    const user = await User.findById(req.user.id);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    // Check and reset daily progress if needed
+    await StreakService.checkAndResetDaily(req.user.id);
+    await user.save();
+    await user.populate('streakStats');
+
+    // Get today's date
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Check if already checked in today
+    const lastCheckIn = user.streakStats?.lastQuestDate;
+    if (lastCheckIn) {
+      const lastCheckInDate = new Date(lastCheckIn);
+      lastCheckInDate.setHours(0, 0, 0, 0);
+      
+      if (lastCheckInDate.getTime() === today.getTime()) {
+        // Already checked in today
+        const todayCheckIns = user.streakStats?.dailyQuestsCompletedToday || 0;
+        if (todayCheckIns > 0) {
+          return res.json({
+            success: true,
+            alreadyCheckedIn: true,
+            message: 'คุณได้เช็คอินวันนี้แล้ว',
+            data: {
+              currentStreak: user.streakStats?.currentStreak || 0,
+              points: user.points || 0,
+              checkInsToday: todayCheckIns
+            }
+          });
+        }
+      }
+    }
+
+    // Initialize streak stats if not exists
+    if (!user.streakStats) {
+      user.streakStats = {
+        currentStreak: 0,
+        longestStreak: 0,
+        lastQuestDate: null,
+        totalQuestsCompleted: 0,
+        totalPointsEarned: 0,
+        dailyQuestsCompletedToday: 0,
+        lastResetDate: null
+      };
+    }
+
+    // Calculate streak
+    const isFirstCheckInOfDay = user.streakStats.dailyQuestsCompletedToday === 0;
+    
+    if (isFirstCheckInOfDay) {
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      
+      const lastQuestDate = user.streakStats.lastQuestDate
+        ? new Date(user.streakStats.lastQuestDate).setHours(0, 0, 0, 0)
+        : null;
+      
+      const yesterdayStart = yesterday.getTime();
+      
+      if (lastQuestDate === yesterdayStart) {
+        // Continue streak
+        user.streakStats.currentStreak += 1;
+        console.log(`🔥 Streak continued: ${user.streakStats.currentStreak} days`);
+      } else if (lastQuestDate !== today.getTime()) {
+        // New streak
+        user.streakStats.currentStreak = 1;
+        console.log(`🌟 New streak started: ${user.streakStats.currentStreak} days`);
+      }
+    }
+
+    // Award points (1 point for check-in)
+    const pointsEarned = 1;
+    
+    // Update stats
+    user.streakStats.dailyQuestsCompletedToday += 1;
+    user.streakStats.totalQuestsCompleted += 1;
+    user.streakStats.totalPointsEarned += pointsEarned;
+    user.streakStats.lastQuestDate = new Date();
+    
+    // Update longest streak
+    if (user.streakStats.currentStreak > user.streakStats.longestStreak) {
+      user.streakStats.longestStreak = user.streakStats.currentStreak;
+    }
+    
+    // Update user points
+    user.points = (user.points || 0) + pointsEarned;
+    
+    // Update daily progress
+    if (!user.dailyQuestProgress) {
+      user.dailyQuestProgress = {
+        date: new Date(),
+        quests: [],
+        isStreakMaintained: false
+      };
+    }
+    user.dailyQuestProgress.isStreakMaintained = true;
+    
+    await user.save();
+
+    console.log(`✅ Check-in successful! Streak: ${user.streakStats.currentStreak} days, Points: ${pointsEarned}`);
+
+    res.json({
+      success: true,
+      data: {
+        pointsEarned,
+        currentStreak: user.streakStats.currentStreak,
+        longestStreak: user.streakStats.longestStreak,
+        totalPoints: user.points,
+        isFirstCheckInOfDay,
+        message: `เช็คอินสำเร็จ! 🔥\nคุณได้รับ ${pointsEarned} คะแนน\nStreak: ${user.streakStats.currentStreak} วัน`
+      }
+    });
+  } catch (error) {
+    console.error('Error in check-in:', error);
     res.status(500).json({
       success: false,
       error: error.message

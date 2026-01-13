@@ -7,8 +7,11 @@ const questSchema = new mongoose.Schema({
   template: { type: mongoose.Schema.Types.ObjectId, ref: 'QuestTemplate' },
   
   // Shop reference (use both shopId and shop ObjectId)
-  shopId: { type: String, required: true }, // The shop ID string
-  shop: { type: mongoose.Schema.Types.ObjectId, ref: 'Shop', required: true }, // Shop reference
+  shopId: { type: String, required: false }, // The shop ID string (optional for tourist quests)
+  shop: { type: mongoose.Schema.Types.ObjectId, ref: 'Shop', required: false }, // Shop reference (optional for tourist quests)
+  
+  // Tourist quest reference (for tourist attraction quests)
+  touristId: { type: String, required: false }, // Tourist attraction ID
   
   // Quest configuration
   budget: { type: Number, required: true },
@@ -49,6 +52,11 @@ const questSchema = new mongoose.Schema({
   address: { type: String },
   coordinates: { type: String },
   radius: { type: Number, default: 100 },
+  
+  // Tourist quest fields
+  isTouristQuest: { type: Boolean, default: false },
+  touristAttractionId: { type: String },
+  isOneTimeQuest: { type: Boolean, default: false },
   
   // Quest status
   status: {

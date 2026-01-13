@@ -98,7 +98,7 @@ router.get('/stats/overview', auth, async (req, res) => {
 
     const totalUsers = await User.countDocuments();
     const totalCustomers = await User.countDocuments({ userType: 'customer' });
-    const totalPartners = await User.countDocuments({ userType: 'partner' });
+    const totalPartners = await User.countDocuments({ partnerId: { $exists: true, $ne: null } });
     const totalShops = await User.countDocuments({ userType: 'shop' });
     const totalAdmins = await User.countDocuments({ userType: 'admin' });
 

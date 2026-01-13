@@ -585,10 +585,95 @@ router.post('/:questId/participate', auth, async (req, res) => {
 });
 
 // Complete a quest (verify and claim reward)
+// Location verification endpoint for check-in quests
+router.post('/:questId/verify-location', auth, async (req, res) => {
+  try {
+    const { questId } = req.params;
+    const { latitude, longitude } = req.body;
+
+    // Validate input
+    if (latitude === undefined || longitude === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing coordinates. Please provide latitude and longitude.'
+      });
+    }
+
+    // Get quest
+    const quest = await Quest.findById(questId);
+    if (!quest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Quest not found'
+      });
+    }
+
+    // Check if quest is location_checkin type
+    if (quest.type !== 'location_checkin') {
+      return res.status(400).json({
+        success: false,
+        message: 'This quest is not a location check-in quest'
+      });
+    }
+
+    // Check if quest has location data
+    if (!quest.coordinates || !quest.radius) {
+      return res.status(400).json({
+        success: false,
+        message: 'Quest location data is missing'
+      });
+    }
+
+    // Parse target coordinates (quest.coordinates is stored as string "lat,lng")
+    const locationVerificationService = require('../service/locationVerificationService');
+    
+    const userCoordinates = { latitude: parseFloat(latitude), longitude: parseFloat(longitude) };
+    let targetCoordinates;
+    
+    if (typeof quest.coordinates === 'string') {
+      const [lat, lng] = quest.coordinates.split(',').map(Number);
+      targetCoordinates = { latitude: lat, longitude: lng };
+    } else if (quest.coordinates.latitude && quest.coordinates.longitude) {
+      targetCoordinates = quest.coordinates;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid quest coordinates format'
+      });
+    }
+
+    // Verify location
+    const verificationResult = await locationVerificationService.verifyLocation(
+      userCoordinates,
+      targetCoordinates,
+      quest.radius
+    );
+
+    res.json({
+      success: true,
+      verified: verificationResult.isValid,
+      distance: verificationResult.distance,
+      radius: verificationResult.radius,
+      withinRadius: verificationResult.withinRadius,
+      message: verificationResult.isValid 
+        ? `คุณอยู่ในระยะการเช็คอิน (ระยะห่าง: ${verificationResult.distance.toFixed(0)} เมตร)`
+        : `คุณอยู่ห่างจากสถานที่ ${verificationResult.distance.toFixed(0)} เมตร กรุณาเข้าใกล้สถานที่มากขึ้น (รัศมี: ${quest.radius} เมตร)`
+    });
+
+  } catch (error) {
+    console.error('Error verifying location:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error verifying location',
+      error: error.message
+    });
+  }
+});
+
 router.post('/:questId/complete', auth, async (req, res) => {
   try {
     const { questId } = req.params;
-    const { userId, verificationData } = req.body;
+    const { userId, verificationData, latitude, longitude } = req.body;
 
     const quest = await Quest.findById(questId);
     if (!quest) {
@@ -598,7 +683,50 @@ router.post('/:questId/complete', auth, async (req, res) => {
       });
     }
 
+    // For location_checkin quests, verify location first
+    if (quest.type === 'location_checkin') {
+      if (latitude === undefined || longitude === undefined) {
+        return res.status(400).json({
+          success: false,
+          message: 'Missing coordinates. Please provide latitude and longitude for location check-in quest.'
+        });
+      }
+
+      const locationVerificationService = require('../service/locationVerificationService');
+      
+      const userCoordinates = { latitude: parseFloat(latitude), longitude: parseFloat(longitude) };
+      let targetCoordinates;
+      
+      if (typeof quest.coordinates === 'string') {
+        const [lat, lng] = quest.coordinates.split(',').map(Number);
+        targetCoordinates = { latitude: lat, longitude: lng };
+      } else if (quest.coordinates.latitude && quest.coordinates.longitude) {
+        targetCoordinates = quest.coordinates;
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid quest coordinates format'
+        });
+      }
+
+      const verificationResult = await locationVerificationService.verifyLocation(
+        userCoordinates,
+        targetCoordinates,
+        quest.radius
+      );
+
+      if (!verificationResult.isValid) {
+        return res.status(400).json({
+          success: false,
+          message: `คุณอยู่ห่างจากสถานที่ ${verificationResult.distance.toFixed(0)} เมตร กรุณาเข้าใกล้สถานที่มากขึ้น (รัศมี: ${quest.radius} เมตร)`,
+          distance: verificationResult.distance,
+          radius: verificationResult.radius
+        });
+      }
+    }
+
     // Find user's participation
+    const UserQuest = require('../models/UserQuest');
     const userQuest = await UserQuest.findOne({
       userId: userId,
       questId: questId
@@ -621,7 +749,7 @@ router.post('/:questId/complete', auth, async (req, res) => {
     // Update quest completion
     userQuest.status = 'completed';
     userQuest.verifiedAt = new Date();
-    userQuest.verificationData = verificationData;
+    userQuest.verificationData = verificationData || { latitude, longitude };
     userQuest.completedAt = new Date();
     await userQuest.save();
 

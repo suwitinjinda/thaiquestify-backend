@@ -45,6 +45,12 @@ router.post('/google', async (req, res) => {
         user.name = name;
       }
 
+      // Give welcome bonus to existing users who don't have points yet
+      if (user.points === undefined || user.points === null || user.points === 0) {
+        user.points = 1000;
+        console.log('🎁 Giving welcome bonus of 1000 points to existing user');
+      }
+
       await user.save();
     } else {
       console.log('🆕 Creating new Google user:', email);
@@ -91,6 +97,8 @@ router.post('/google', async (req, res) => {
         phone: user.phone || '',
         googleId: user.googleId,
         isEmailVerified: user.isEmailVerified,
+        partnerCode: user.partnerCode || null,
+        partnerId: user.partnerId || null,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt
       }
@@ -235,7 +243,20 @@ router.post('/google/exchange', async (req, res) => {
       user.lastLogin = new Date();
       user.updatedAt = new Date();
 
-      await user.save();
+      // Fix: Ensure integrations.facebook.accountType is valid or null
+      // If user has Facebook integration but accountType is invalid, set to null
+      if (user.integrations?.facebook) {
+        const accountType = user.integrations.facebook.accountType;
+        if (accountType !== null && accountType !== undefined && 
+            !['user', 'page', 'unknown'].includes(accountType)) {
+          // If invalid value, set to null
+          user.integrations.facebook.accountType = null;
+        }
+      }
+
+      // Use validateBeforeSave: false to skip validation for this update
+      // Or mark the field as modified to allow null
+      await user.save({ validateBeforeSave: true });
       console.log('✅ User updated successfully');
     }
 
@@ -265,7 +286,8 @@ router.post('/google/exchange', async (req, res) => {
       createdAt: user.createdAt, // ⚠️ สำคัญ!
       lastLogin: user.lastLogin, // ⚠️ สำคัญ!
       isActive: user.isActive,
-      partnerCode: user.partnerCode,
+      partnerCode: user.partnerCode || null,
+      partnerId: user.partnerId || null,
       updatedAt: user.updatedAt
     };
 
@@ -285,7 +307,15 @@ router.post('/google/exchange', async (req, res) => {
 
   } catch (error) {
     // จัดการ Error ทุกรูปแบบ (Network, Google API 400, DB Error)
-    console.error('❌ FATAL Backend Error:', error.message);
+    console.error('❌ FATAL Backend Error:', {
+      message: error.message,
+      stack: error.stack,
+      response: error.response ? {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data
+      } : null
+    });
 
     let errorMessage = 'Internal server error during authentication process.';
 
@@ -625,6 +655,8 @@ router.post('/login', async (req, res) => {
         photo: user.photo,
         phone: user.phone || '',
         isEmailVerified: user.isEmailVerified,
+        partnerCode: user.partnerCode || null,
+        partnerId: user.partnerId || null,
         createdAt: user.createdAt
       }
     });
@@ -818,6 +850,13 @@ router.post('/facebook', async (req, res) => {
           // เชื่อม Facebook กับ account เดิม
           user.facebookId = profile.id;
           if (!user.photo) user.photo = profile.picture?.data?.url;
+          
+          // Give welcome bonus to existing users who don't have points yet
+          if (user.points === undefined || user.points === null || user.points === 0) {
+            user.points = 1000;
+            console.log('🎁 Giving welcome bonus of 1000 points to existing user');
+          }
+          
           await user.save();
           console.log('✅ เชื่อม Facebook กับ account เดิม');
         }
@@ -848,12 +887,24 @@ router.post('/facebook', async (req, res) => {
       } else {
         // อัพเดทผู้ใช้ที่มีอยู่
         user.lastLogin = new Date();
+        
+        // Give welcome bonus to existing users who don't have points yet
+        if (user.points === undefined || user.points === null || user.points === 0) {
+          user.points = 1000;
+          console.log('🎁 Giving welcome bonus of 1000 points to existing user');
+        }
+        
         await user.save();
         console.log('✅ เจอผู้ใช้เดิม, อัพเดท lastLogin');
       }
 
     } else {
       // Update existing user
+      // Give welcome bonus to existing users who don't have points yet
+      if (user.points === undefined || user.points === null || user.points === 0) {
+        user.points = 1000;
+        console.log('🎁 Giving welcome bonus of 1000 points to existing user');
+      }
       user.lastLogin = new Date();
       if (profile.picture?.data?.url && !user.photo) {
         user.photo = profile.picture.data.url;
@@ -888,6 +939,8 @@ router.post('/facebook', async (req, res) => {
         phone: user.phone || '',
         facebookId: user.facebookId,
         isEmailVerified: user.isEmailVerified,
+        partnerCode: user.partnerCode || null,
+        partnerId: user.partnerId || null,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt
       },
@@ -916,6 +969,75 @@ router.get('/facebook-config', (req, res) => {
       '✅ Facebook credentials configured' :
       '❌ FACEBOOK_CLIENT_SECRET is missing in .env file'
   });
+});
+
+// Get current user profile (requires authentication)
+const { auth } = require('../middleware/auth');
+router.get('/me', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id)
+      .select('-__v')
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Convert to plain object
+    const userData = user;
+
+    // Return user data without sensitive information
+    res.json({
+      success: true,
+      user: {
+        _id: userData._id,
+        name: userData.name,
+        email: userData.email,
+        photo: userData.photo,
+        phone: userData.phone,
+        userType: userData.userType,
+        points: userData.points || 0,
+        streakStats: userData.streakStats || {
+          currentStreak: 0,
+          longestStreak: 0,
+          totalQuestsCompleted: 0,
+          totalPointsEarned: 0,
+          dailyQuestsCompletedToday: 0
+        },
+        socialStats: userData.socialStats || {
+          friendsCount: 0,
+          invitesSent: 0,
+          invitesAccepted: 0,
+          sharedQuests: 0,
+          socialPoints: 0
+        },
+        achievements: userData.achievements || [],
+        integrations: {
+          tiktok: userData.integrations?.tiktok ? {
+            connectedAt: userData.integrations.tiktok.connectedAt,
+            displayName: userData.integrations.tiktok.displayName,
+            username: userData.integrations.tiktok.displayName
+          } : null
+        },
+        isEmailVerified: userData.isEmailVerified,
+        partnerId: userData.partnerId || null,
+        partnerCode: userData.partnerCode || null,
+        isActive: userData.isActive,
+        createdAt: userData.createdAt,
+        updatedAt: userData.updatedAt
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error fetching user profile:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching user profile',
+      error: error.message
+    });
+  }
 });
 
 module.exports = router;

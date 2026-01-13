@@ -63,22 +63,38 @@ class StreakService {
     }
 
     static async checkAndResetDaily(userId) {
-        const user = await User.findById(userId);
-        if (!user || !user.streakStats) return;
+        try {
+            const user = await User.findById(userId);
+            if (!user || !user.streakStats) return;
 
-        const today = new Date().toDateString();
-        const lastReset = user.streakStats.lastResetDate
-            ? new Date(user.streakStats.lastResetDate).toDateString()
-            : null;
+            const today = new Date().toDateString();
+            const lastReset = user.streakStats.lastResetDate
+                ? new Date(user.streakStats.lastResetDate).toDateString()
+                : null;
 
-        if (lastReset !== today) {
-            user.streakStats.dailyQuestsCompletedToday = 0;
-            user.streakStats.lastResetDate = new Date();
-            user.dailyQuestProgress.date = new Date();
-            user.dailyQuestProgress.quests = [];
-            user.dailyQuestProgress.isStreakMaintained = false;
-
-            await user.save();
+            if (lastReset !== today) {
+                // Use findOneAndUpdate to avoid version conflicts
+                await User.findOneAndUpdate(
+                    { _id: userId },
+                    {
+                        $set: {
+                            'streakStats.dailyQuestsCompletedToday': 0,
+                            'streakStats.lastResetDate': new Date(),
+                            'dailyQuestProgress.date': new Date(),
+                            'dailyQuestProgress.quests': [],
+                            'dailyQuestProgress.isStreakMaintained': false
+                        }
+                    },
+                    { 
+                        new: true,
+                        runValidators: false // Skip validation to avoid potential issues
+                    }
+                );
+            }
+        } catch (error) {
+            // Log error but don't throw - we don't want to break dashboard loading
+            console.error('⚠️ Error in checkAndResetDaily:', error.message);
+            // Try to continue anyway
         }
     }
 

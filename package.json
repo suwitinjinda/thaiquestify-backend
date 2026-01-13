@@ -7,9 +7,19 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "seed": "node scripts/seedData.js",
+    "migrate:attractions": "node scripts/migrate-tourist-attractions.js",
+    "migrate:michelin": "node scripts/add-michelin-restaurants.js",
+    "pm2:start": "pm2 start server.js --name thaiquestify-backend",
+    "pm2:stop": "pm2 stop thaiquestify-backend",
+    "pm2:restart": "pm2 restart thaiquestify-backend",
+    "pm2:delete": "pm2 delete thaiquestify-backend",
+    "pm2:logs": "pm2 logs thaiquestify-backend",
+    "pm2:monit": "pm2 monit",
+    "pm2:status": "pm2 status",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.18.0",
     "axios": "^1.13.2",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -18,10 +28,12 @@
     "google-auth-library": "^10.5.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^7.5.0",
+    "multer": "^2.0.2",
     "react-native-fbsdk-next": "^13.4.1"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.0.1",
+    "pm2": "^6.0.14"
   },
   "keywords": [
     "quest",

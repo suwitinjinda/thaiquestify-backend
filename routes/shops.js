@@ -43,17 +43,7 @@ router.put('/admin/shops/:id/status', auth, async (req, res) => {
     }
 
     // ✅ FIX: Use findOneAndUpdate with _id field explicitly
-    const shop = await Shop.findOneAndUpdate(
-      { _id: shopId }, // Explicitly search by _id
-      { 
-        status,
-        ...(rejectionReason && { rejectionReason }),
-        updatedAt: new Date()
-      },
-      { new: true, runValidators: true }
-    ).populate('partnerId', 'name email');
-
-    console.log(`🔍 Query result:`, shop);
+    let shop = await Shop.findOne({ _id: shopId });
 
     if (!shop) {
       // Log all shops to debug
@@ -66,7 +56,67 @@ router.put('/admin/shops/:id/status', auth, async (req, res) => {
       });
     }
 
-    console.log(`✅ Shop ${shop.shopId} status updated to: ${status}`);
+    // Generate unique shop ID when approving (if not already generated)
+    if (status === 'active' && !shop.shopId) {
+      const { generateUniqueShopId } = require('../utils/shopIdGenerator');
+      const uniqueShopId = await generateUniqueShopId();
+      
+      shop.shopId = uniqueShopId;
+      console.log(`✅ Generated unique shop ID: ${uniqueShopId} for shop: ${shop.shopName}`);
+      
+      // Upload images to GCP if images exist (and are not already URLs)
+      if (shop.images && shop.images.length > 0) {
+        try {
+          // Check if images are base64 strings or already URLs
+          const needsUpload = shop.images.some(img => typeof img === 'object' || (typeof img === 'string' && img.startsWith('data:')));
+          
+          if (needsUpload) {
+            const { uploadShopImages } = require('../utils/gcpStorage');
+            const imageBuffers = shop.images.map(img => {
+              if (typeof img === 'string' && img.startsWith('data:')) {
+                // Base64 data URL
+                const base64Data = img.split(',')[1];
+                return {
+                  buffer: Buffer.from(base64Data, 'base64'),
+                  mimeType: img.match(/data:([^;]+)/)?.[1] || 'image/jpeg'
+                };
+              } else if (typeof img === 'object' && img.buffer) {
+                return {
+                  buffer: Buffer.from(img.buffer, 'base64'),
+                  mimeType: img.mimeType || 'image/jpeg'
+                };
+              }
+              return null;
+            }).filter(Boolean);
+            
+            if (imageBuffers.length > 0) {
+              const uploadedUrls = await uploadShopImages(imageBuffers, uniqueShopId);
+              shop.images = uploadedUrls;
+              console.log(`✅ Uploaded ${uploadedUrls.length} images to GCP for shop ${uniqueShopId}`);
+            }
+          }
+        } catch (uploadError) {
+          console.error('❌ Error uploading images to GCP:', uploadError);
+          // Continue with approval even if image upload fails
+        }
+      }
+    }
+
+    // Update shop status and other fields
+    shop.status = status;
+    if (rejectionReason) {
+      shop.rejectionReason = rejectionReason;
+    }
+    if (status === 'active') {
+      shop.approvedAt = new Date();
+      shop.approvedBy = req.user.id;
+    }
+    shop.updatedAt = new Date();
+
+    await shop.save();
+    await shop.populate('partnerId', 'name email');
+
+    console.log(`✅ Shop ${shop.shopId || 'N/A'} status updated to: ${status}`);
     
     res.json({
       success: true,

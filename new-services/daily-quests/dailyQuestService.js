@@ -1,7 +1,10 @@
 // new-services/daily-quests/dailyQuestService.js
+const mongoose = require('mongoose');
 const User = require('../../models/User');
 const DailyQuest = require('../../models/DailyQuest');
 const StreakService = require('../streak/streakService');
+const SocialQuest = require('../../models/SocialQuest');
+const SocialQuestParticipation = require('../../models/SocialQuestParticipation');
 
 class DailyQuestService {
     static async getTodaysQuests(userId) {
@@ -74,7 +77,7 @@ class DailyQuestService {
                 await user.save();
             }
 
-            // Map quests กับ user progress
+            // Map quests กับ user progress (DailyQuest ปกติ)
             const questsWithProgress = quests.map(quest => {
                 // ตรวจสอบว่า quest นี้ user ทำเสร็จแล้วหรือยัง
                 let isCompleted = false;
@@ -96,11 +99,14 @@ class DailyQuestService {
                 // ตรวจสอบ availability
                 const isAvailable = quest.isAvailableNow();
 
+                // สำหรับเควสเช็คอิน ให้แต้มพื้นฐาน = 1 เสมอ
+                const basePoints = quest.questType === 'checkin' ? 1 : quest.points;
+
                 return {
                     _id: quest._id,
                     name: quest.name,
                     description: quest.description,
-                    points: quest.points,
+                    points: basePoints,
                     icon: quest.icon,
                     requirements: quest.requirements,
                     questType: quest.questType,
@@ -115,13 +121,208 @@ class DailyQuestService {
                 };
             });
 
-            const completedCount = questsWithProgress.filter(q => q.isCompleted).length;
-            const availableCount = questsWithProgress.filter(q => q.isAvailable).length;
+            // ===== เพิ่ม Social Quests แบบสุ่มเข้าไปใน Daily Quests (สูงสุด 4 เควส / วัน / user) =====
+            // แนวคิด: เลือก social quests สำหรับ user แต่ละวัน แล้ว "ล็อก" ไว้ใน dailyQuestProgress
+            // เพื่อให้ refresh กี่ครั้ง ในวันเดียวกันชุด social quests จะไม่เปลี่ยน จนกว่าจะข้ามวันใหม่
+            console.log('🔍 [SOCIAL_DAILY_DEBUG] Fetching social quests for daily mix...');
 
-            console.log(`✅ Prepared ${questsWithProgress.length} quests`);
-            console.log(`🏁 Completed: ${completedCount}, Available: ${availableCount}`);
+            // ใช้ selectedSocialQuests ที่เคยเลือกไว้ใน dailyQuestProgress ก่อน (ถ้ามี)
+            let selectedSocialIds = [];
+            if (user.dailyQuestProgress && Array.isArray(user.dailyQuestProgress.selectedSocialQuests)) {
+                selectedSocialIds = user.dailyQuestProgress.selectedSocialQuests.map(id => id.toString());
+            }
 
-            return questsWithProgress;
+            console.log(`🔍 [SOCIAL_DAILY_DEBUG] Existing selected social IDs for today:`, selectedSocialIds);
+
+            // ถ้ายังไม่มีเลือกไว้เลย ให้สุ่มเลือกตอนนี้ แล้วบันทึกลง dailyQuestProgress
+            if (selectedSocialIds.length === 0) {
+                // ดึง social quest ที่ active และไม่ใช่ของตัวเอง (owner != userId)
+                const activeSocialQuests = await SocialQuest.find({
+                    status: 'active',
+                    owner: { $ne: userId },
+                }).lean();
+                console.log(`🔍 [SOCIAL_DAILY_DEBUG] Active social quests in DB (exclude self): ${activeSocialQuests.length}`);
+
+                let socialDailyQuestsCandidates = [];
+
+                if (activeSocialQuests.length > 0) {
+                    const socialQuestIds = activeSocialQuests.map(q => q._id);
+
+                    const participations = await SocialQuestParticipation.find({
+                        quest: { $in: socialQuestIds },
+                        participant: userId,
+                    }).lean();
+
+                    const participatedMap = new Set(participations.map(p => p.quest.toString()));
+
+                    console.log(`🔍 [SOCIAL_DAILY_DEBUG] Participations for user ${userId}: ${participations.length}`);
+                    console.log(`🔍 [SOCIAL_DAILY_DEBUG] Participated quest IDs:`, Array.from(participatedMap));
+
+                    // กรองเฉพาะเควสที่ user ยังไม่เคยเข้าร่วม
+                    let availableSocial = activeSocialQuests.filter(q => {
+                        const sq = new SocialQuest(q);
+                        const isActive = sq.isActive();
+                        const hasJoined = participatedMap.has(q._id.toString());
+                        if (!isActive) {
+                            console.log(`⏹ [SOCIAL_DAILY_DEBUG] Social quest ${q._id} not active (status/expires/maxParticipants)`);
+                        }
+                        if (hasJoined) {
+                            console.log(`👀 [SOCIAL_DAILY_DEBUG] User already participated social quest ${q._id}`);
+                        }
+                        return isActive && !hasJoined;
+                    });
+
+                    console.log(`🔍 [SOCIAL_DAILY_DEBUG] Available social quests for today (before shuffle): ${availableSocial.length}`);
+
+                    // สุ่มลำดับแล้วเลือกสูงสุด 4 เควส
+                    availableSocial = availableSocial.sort(() => 0.5 - Math.random());
+                    const pickedSocial = availableSocial.slice(0, 4);
+                    console.log(`🎲 [SOCIAL_DAILY_DEBUG] Picked social quests for today: ${pickedSocial.length}`);
+                    if (pickedSocial.length > 0) {
+                        console.log('[SOCIAL_DAILY_DEBUG] Picked IDs:', pickedSocial.map(q => q._id.toString()));
+                    }
+
+                    socialDailyQuestsCandidates = pickedSocial;
+                    selectedSocialIds = pickedSocial.map(q => q._id.toString());
+                }
+
+                // บันทึก selectedSocialQuests ไว้ใน dailyQuestProgress เพื่อให้คงเดิมทั้งวัน
+                if (!user.dailyQuestProgress) {
+                    user.dailyQuestProgress = {
+                        date: new Date(),
+                        quests: [],
+                        isStreakMaintained: false
+                    };
+                }
+                user.dailyQuestProgress.selectedSocialQuests = selectedSocialIds;
+                await user.save();
+
+                console.log('💾 [SOCIAL_DAILY_DEBUG] Saved selected social quests for today:', selectedSocialIds);
+            }
+
+            // ตอนนี้ selectedSocialIds คือชุด social quest IDs วันนี้ (อาจว่างได้ถ้าไม่มี)
+            // ⚠️ สำคัญ: ใช้ selectedSocialIds เสมอ (แม้ว่า user จะเข้าร่วมแล้ว) เพื่อให้ quest แสดงใน daily quest
+            // Quest ที่ pending ควรแสดงอยู่จนกว่าจะ approved หรือ denied
+            let socialDailyQuests = [];
+
+            if (selectedSocialIds.length > 0) {
+                // ใช้ selectedSocialIds ทั้งหมด แม้ว่า user จะเข้าร่วมแล้ว (pending/approved/denied)
+                // เพราะ quest นี้เป็น daily quest ที่ต้องแสดงอยู่จนกว่าจะ complete
+                const socialObjectIds = selectedSocialIds
+                    .filter(id => mongoose.Types.ObjectId.isValid(id))
+                    .map(id => new mongoose.Types.ObjectId(id));
+                
+                const selectedSocialQuests = await SocialQuest.find({
+                    _id: { $in: socialObjectIds }
+                    // ไม่กรอง status เพื่อให้แสดง quest ที่ pending หรือ cancel แล้วด้วย
+                    // เพราะ quest นี้เป็น daily quest ที่ต้องแสดงอยู่จนกว่าจะ complete
+                }).lean();
+
+                console.log(`🔍 [SOCIAL_DAILY_DEBUG] Loaded ${selectedSocialQuests.length} selected social quests for today (from ${selectedSocialIds.length} saved IDs)`);
+
+                // ตรวจสอบ participations ของ user สำหรับ social quests เหล่านี้
+                const socialQuestIds = selectedSocialQuests.map(sq => sq._id);
+                const participations = await SocialQuestParticipation.find({
+                    quest: { $in: socialQuestIds },
+                    participant: userId
+                }).lean();
+
+                const participationMap = {};
+                participations.forEach(p => {
+                    const questId = p.quest.toString();
+                    participationMap[questId] = {
+                        status: p.status,
+                        createdAt: p.createdAt,
+                        verifiedAt: p.verification?.verifiedAt
+                    };
+                });
+
+                socialDailyQuests = selectedSocialQuests.map(sq => {
+                    const virtualId = `social_${sq._id.toString()}`;
+                    const participation = participationMap[sq._id.toString()];
+
+                    // ตรวจสอบ progress เดิมใน dailyQuestProgress
+                    let isCompleted = false;
+                    let completedAt = null;
+                    let pointsEarned = null;
+                    let participationStatus = null;
+
+                    // ตรวจสอบ participation status
+                    if (participation) {
+                        participationStatus = participation.status;
+                        if (participation.status === 'approved') {
+                            isCompleted = true;
+                            completedAt = participation.verifiedAt || participation.createdAt;
+                            pointsEarned = 1;
+                        }
+                    } else if (user.dailyQuestProgress && user.dailyQuestProgress.quests) {
+                        const questProgress = user.dailyQuestProgress.quests.find(
+                            qp => qp.questId && qp.questId.toString() === virtualId
+                        );
+
+                        if (questProgress) {
+                            isCompleted = questProgress.completed || false;
+                            completedAt = questProgress.completedAt;
+                            pointsEarned = questProgress.points;
+                        }
+                    }
+
+                    const progressValue = isCompleted ? 'completed' : (participationStatus === 'pending' ? 'pending_review' : 'pending');
+                    
+                    console.log(`📋 [SOCIAL_DAILY_DEBUG] Quest ${virtualId}: isCompleted=${isCompleted}, participationStatus=${participationStatus}, progress=${progressValue}, hasParticipated=${!!participation}`);
+
+                    return {
+                        _id: virtualId,
+                        name: sq.title,
+                        description: sq.description || '',
+                        points: 1, // social quest ใน daily quest ให้ 1 แต้ม
+                        icon: 'group',
+                        requirements: 'เข้าร่วม Social Quest นี้ให้สำเร็จ',
+                        questType: 'social',
+                        action: 'social_quest',
+                        isCompleted,
+                        completed: isCompleted,
+                        completedAt,
+                        pointsEarned,
+                        participationStatus: participationStatus || (participation ? 'pending' : null),
+                        hasParticipated: !!participation,
+                        isAvailable: true, // Always available - even when pending, it should stay visible
+                        progress: progressValue,
+                        availableNow: true,
+                        // ข้อมูลเสริมสำหรับ frontend เพื่อให้สามารถเปิด TikTok link ได้
+                        socialQuestRef: sq._id,
+                        socialTemplate: sq.template,
+                        tiktokProfile: sq.tiktokProfile || null,
+                        tiktokShareUrl: sq.tiktokShareUrl || null,
+                    };
+                });
+            }
+
+            const allQuestsToday = [...questsWithProgress, ...socialDailyQuests];
+
+            const completedCount = allQuestsToday.filter(q => q.isCompleted).length;
+            const availableCount = allQuestsToday.filter(q => q.isAvailable).length;
+            const pendingCount = allQuestsToday.filter(q => q.participationStatus === 'pending' || q.progress === 'pending_review').length;
+
+            console.log(`✅ [DAILY_DEBUG] Prepared ${allQuestsToday.length} quests (daily + social)`);
+            console.log(`    • Daily quests count: ${questsWithProgress.length}`);
+            console.log(`    • Social quests mixed in: ${socialDailyQuests.length}`);
+            console.log(`🏁 [DAILY_DEBUG] Completed: ${completedCount}, Available: ${availableCount}, Pending: ${pendingCount}`);
+            
+            // Log quests with pending status
+            const pendingQuests = allQuestsToday.filter(q => q.participationStatus === 'pending' || q.progress === 'pending_review');
+            if (pendingQuests.length > 0) {
+                console.log(`📋 [DAILY_DEBUG] Pending quests details:`, pendingQuests.map(q => ({
+                    id: q._id,
+                    name: q.name,
+                    participationStatus: q.participationStatus,
+                    progress: q.progress,
+                    isCompleted: q.isCompleted,
+                    hasParticipated: q.hasParticipated
+                })));
+            }
+
+            return allQuestsToday;
 
         } catch (error) {
             console.error('❌ Error in getTodaysQuests:', error);
@@ -134,13 +335,25 @@ class DailyQuestService {
         try {
             console.log(`🎯 Completing quest ${questId} for user ${userId}`);
 
-            // 1. ตรวจสอบ quest
-            const quest = await DailyQuest.findById(questId);
-            if (!quest) {
-                throw new Error('Quest not found');
-            }
+            const questIdStr = questId.toString();
+            const isSocialDaily = questIdStr.startsWith('social_');
+            const socialQuestId = isSocialDaily ? questIdStr.replace('social_', '') : null;
 
-            console.log(`📋 Quest found: ${quest.name}`);
+            // 1. ตรวจสอบ quest (DailyQuest หรือ SocialQuest ผ่าน daily quest)
+            let quest = null;
+            if (isSocialDaily) {
+                quest = await SocialQuest.findById(socialQuestId);
+                if (!quest) {
+                    throw new Error('Social quest not found');
+                }
+                console.log(`📋 Social Daily Quest found: ${quest.title}`);
+            } else {
+                quest = await DailyQuest.findById(questId);
+                if (!quest) {
+                    throw new Error('Quest not found');
+                }
+                console.log(`📋 Quest found: ${quest.name}`);
+            }
 
             // 2. ตรวจสอบ user
             const user = await User.findById(userId);
@@ -165,9 +378,11 @@ class DailyQuestService {
                 };
             }
 
+            const targetQuestIdForProgress = isSocialDaily ? questIdStr : questId.toString();
+
             // ตรวจสอบว่า quest นี้ทำแล้วหรือยัง
             const alreadyCompleted = user.dailyQuestProgress?.quests?.some(
-                q => q.questId && q.questId.toString() === questId.toString() && q.completed
+                q => q.questId && q.questId.toString() === targetQuestIdForProgress && q.completed
             );
 
             if (alreadyCompleted) {
@@ -185,7 +400,14 @@ class DailyQuestService {
             // 6. คำนวณคะแนน
             const currentStreak = user.streakStats?.currentStreak || 0;
             const streakMultiplier = StreakService.getStreakMultiplier(currentStreak);
-            const pointsEarned = Math.floor(quest.points * streakMultiplier);
+
+            // สำหรับเควสเช็คอิน และ Social Daily Quest ให้ได้ 1 คะแนนคงที่
+            let pointsEarned;
+            if (quest.questType === 'checkin' || isSocialDaily) {
+                pointsEarned = 1;
+            } else {
+                pointsEarned = Math.floor(quest.points * streakMultiplier);
+            }
 
             console.log(`💰 Points: ${quest.points} × ${streakMultiplier} = ${pointsEarned}`);
 
@@ -242,7 +464,10 @@ class DailyQuestService {
                 user.streakStats.longestStreak = user.streakStats.currentStreak;
             }
 
-            // 8. อัพเดท daily progress
+            // 8. อัพเดทคะแนนรวมของระบบ (points หลัก)
+            user.points = (user.points || 0) + pointsEarned;
+
+            // 9. อัพเดท daily progress
             if (!user.dailyQuestProgress) {
                 user.dailyQuestProgress = {
                     date: new Date(),
@@ -253,7 +478,7 @@ class DailyQuestService {
 
             // เพิ่มหรืออัพเดท quest progress
             const questProgress = user.dailyQuestProgress.quests.find(
-                q => q.questId && q.questId.toString() === questId.toString()
+                q => q.questId && q.questId.toString() === targetQuestIdForProgress
             );
 
             if (questProgress) {
@@ -262,7 +487,7 @@ class DailyQuestService {
                 questProgress.points = pointsEarned;
             } else {
                 user.dailyQuestProgress.quests.push({
-                    questId: questId,
+                    questId: targetQuestIdForProgress,
                     completed: true,
                     completedAt: new Date(),
                     points: pointsEarned
@@ -271,27 +496,51 @@ class DailyQuestService {
 
             user.dailyQuestProgress.isStreakMaintained = true;
 
-            // 9. เพิ่มไปยัง quest history
-            if (!user.questHistory) {
+            // 9. เพิ่มไปยัง quest history (เฉพาะ quests ที่มี ObjectId จริง ไม่ใช่ social quests)
+            // สำหรับ social quests เราไม่ต้องเก็บใน questHistory เพราะมันไม่ใช่ Quest object
+            if (!isSocialDaily && !user.questHistory) {
                 user.questHistory = [];
             }
 
-            user.questHistory.push({
-                questId: questId,
-                completedAt: new Date(),
-                points: pointsEarned,
-                streakAtCompletion: user.streakStats.currentStreak
-            });
+            // เพิ่ม questHistory เฉพาะ quests ที่ไม่ใช่ social quests
+            // เพราะ social quests ใช้ String ID (social_xxx) แต่ questHistory ต้องการ ObjectId
+            if (!isSocialDaily) {
+                user.questHistory.push({
+                    questId: quest._id, // ใช้ ObjectId จริงจาก quest object
+                    completedAt: new Date(),
+                    points: pointsEarned,
+                    streakAtCompletion: user.streakStats.currentStreak
+                });
+            }
 
-            // 10. อัพเดท quest statistics
-            quest.totalCompletions = (quest.totalCompletions || 0) + 1;
-            quest.totalPointsGiven = (quest.totalPointsGiven || 0) + pointsEarned;
+            // 10. อัพเดท quest statistics (เฉพาะ DailyQuest ปกติ)
+            if (!isSocialDaily) {
+                quest.totalCompletions = (quest.totalCompletions || 0) + 1;
+                quest.totalPointsGiven = (quest.totalPointsGiven || 0) + pointsEarned;
+            }
 
-            // 11. บันทึกทุกอย่าง
-            await Promise.all([
-                user.save(),
-                quest.save()
-            ]);
+            // 11. ตรวจสอบ bonus ถ้าทำครบทุกเควสของวันนี้
+            const todaysQuests = await this.getTodaysQuests(userId);
+            const totalQuestsToday = todaysQuests.length;
+            const completedToday = user.dailyQuestProgress.quests.filter(q => q.completed).length;
+
+            let bonusEarned = 0;
+            if (totalQuestsToday > 0 && completedToday >= totalQuestsToday) {
+                bonusEarned = 5;
+                user.points = (user.points || 0) + bonusEarned;
+                user.streakStats.totalPointsEarned += bonusEarned;
+                console.log(`🎉 All daily quests completed! Bonus +${bonusEarned} points awarded.`);
+            }
+
+            // 12. บันทึกทุกอย่าง
+            if (!isSocialDaily) {
+                await Promise.all([
+                    user.save(),
+                    quest.save()
+                ]);
+            } else {
+                await user.save();
+            }
 
             console.log(`✅ Quest completed successfully!`);
             console.log(`📊 Stats: ${pointsEarned} points, Streak: ${user.streakStats.currentStreak} days`);
@@ -299,6 +548,7 @@ class DailyQuestService {
             return {
                 success: true,
                 pointsEarned,
+                bonusEarned,
                 streakMultiplier,
                 newStreak: user.streakStats.currentStreak,
                 isFirstQuestOfDay: isFirstQuestOfDay,

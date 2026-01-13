@@ -160,4 +160,6 @@ userGeneratedQuestSchema.index({ status: 1, createdAt: -1 });
 userGeneratedQuestSchema.index({ type: 1, platform: 1 });
 userGeneratedQuestSchema.index({ 'stats.currentCount': -1 }); // สำหรับ popular quests
 
-module.exports = mongoose.model('UserGeneratedQuest', userGeneratedQuestSchema);
+// Collection name: 'jobpostings' - สำหรับงาน/รับจ้าง (job postings)
+// แยกจาก socialquests (เควสจากชุมชน)
+module.exports = mongoose.model('UserGeneratedQuest', userGeneratedQuestSchema, 'jobpostings');

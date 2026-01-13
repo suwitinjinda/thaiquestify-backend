@@ -4,8 +4,9 @@ const mongoose = require('mongoose');
 const shopSchema = new mongoose.Schema({
   shopId: {
     type: String,
-    required: true,
+    required: false, // Will be generated when approved
     unique: true,
+    sparse: true, // Allow null values for uniqueness
     maxlength: 6
   },
   partnerId: {
@@ -58,6 +59,10 @@ const shopSchema = new mongoose.Schema({
     latitude: Number,
     longitude: Number
   },
+  images: [{
+    type: String, // GCP bucket URL
+    default: []
+  }],
   phone: {
     type: String,
     required: true

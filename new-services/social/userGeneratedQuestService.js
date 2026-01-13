@@ -1,4 +1,6 @@
 // new-services/social/userGeneratedQuestService.js
+// Service สำหรับจัดการ Job Postings (งาน/รับจ้าง)
+// Collection: 'jobpostings' - แยกจาก 'socialquests' (เควสจากชุมชน)
 const UserGeneratedQuest = require('../../models/UserGeneratedQuest');
 const UserQuestParticipation = require('../../models/UserQuestParticipation');
 const User = require('../../models/User');
@@ -18,10 +20,11 @@ class UserGeneratedQuestService {
             expiredAt.setDate(expiredAt.getDate() + (questData.settings?.durationDays || 7));
 
             // สร้าง quest
+            // ใช้ status จาก questData หรือ 'active' ถ้าไม่ระบุ (สำหรับ job posting ให้เป็น active ทันที)
             const quest = new UserGeneratedQuest({
                 ...questData,
                 creator: userId,
-                status: 'pending',
+                status: questData.status || 'active', // ใช้ status จาก request หรือ default เป็น 'active'
                 expiredAt: expiredAt
             });
 

@@ -59,7 +59,7 @@ const auth = async (req, res, next) => {
         console.log('🔓 Extracted userId:', userId, 'timestamp:', timestamp);
         
         try {
-          const user = await User.findById(userId).select('_id name email userType partnerCode isActive');
+          const user = await User.findById(userId).select('_id name email userType partnerCode partnerId isActive');
           
           if (!user) {
             console.log('❌ User not found for user-token');
@@ -83,7 +83,8 @@ const auth = async (req, res, next) => {
             name: user.name,
             email: user.email,
             userType: user.userType,
-            partnerCode: user.partnerCode
+            partnerCode: user.partnerCode,
+            partnerId: user.partnerId
           };
 
           console.log(`✅ User-token authentication successful for: ${user.email} (${user.userType})`);
@@ -113,7 +114,7 @@ const auth = async (req, res, next) => {
       const userId = token.replace('auto-login-', '');
       
       try {
-        const user = await User.findById(userId).select('_id name email userType partnerCode isActive');
+        const user = await User.findById(userId).select('_id name email userType partnerCode partnerId isActive');
         
         if (!user) {
           console.log('❌ User not found for auto-login');
@@ -137,7 +138,8 @@ const auth = async (req, res, next) => {
           name: user.name,
           email: user.email,
           userType: user.userType,
-          partnerCode: user.partnerCode
+          partnerCode: user.partnerCode,
+          partnerId: user.partnerId
         };
 
         console.log(`✅ Auto-login successful for: ${user.email} (${user.userType})`);
@@ -161,7 +163,7 @@ const auth = async (req, res, next) => {
       
       console.log('🔐 JWT decoded:', decoded);
       
-      const user = await User.findById(decoded.id || decoded._id || decoded.userId).select('_id name email userType partnerCode isActive');
+      const user = await User.findById(decoded.id || decoded._id || decoded.userId).select('_id name email userType partnerCode partnerId isActive');
       
       if (!user) {
         console.log('❌ User not found in database for JWT token');
@@ -185,7 +187,8 @@ const auth = async (req, res, next) => {
         name: user.name,
         email: user.email,
         userType: user.userType,
-        partnerCode: user.partnerCode
+        partnerCode: user.partnerCode,
+        partnerId: user.partnerId
       };
 
       console.log(`✅ JWT authentication successful for: ${user.email} (${user.userType})`);
@@ -212,4 +215,32 @@ const auth = async (req, res, next) => {
   }
 };
 
-module.exports = { auth };
+// Admin authentication middleware
+const adminAuth = async (req, res, next) => {
+  try {
+    // First check if user is authenticated
+    await new Promise((resolve, reject) => {
+      auth(req, res, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    // Then check if user is admin
+    if (!req.user || req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Admin privileges required.'
+      });
+    }
+
+    next();
+  } catch (error) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required'
+    });
+  }
+};
+
+module.exports = { auth, adminAuth };

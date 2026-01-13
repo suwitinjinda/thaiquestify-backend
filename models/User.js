@@ -29,7 +29,8 @@ const userSchema = new mongoose.Schema({
       connectedAt: { type: Date, default: null },
       openId: { type: String, default: null },
       unionId: { type: String, default: null },
-      displayName: { type: String, default: null },
+      username: { type: String, default: null }, // TikTok username (e.g., "noom2419")
+      displayName: { type: String, default: null }, // Display name (e.g., "noom")
       avatarUrl: { type: String, default: null },
 
       // NOTE: In production, store tokens encrypted / in a secrets store.
@@ -37,6 +38,37 @@ const userSchema = new mongoose.Schema({
       refreshToken: { type: String, default: null },
       expiresAt: { type: Date, default: null },
       scope: { type: String, default: null },
+    },
+    facebook: {
+      connectedAt: { type: Date, default: null },
+      userId: { type: String, default: null }, // Facebook User ID
+      name: { type: String, default: null }, // Facebook display name
+      email: { type: String, default: null },
+      avatarUrl: { type: String, default: null },
+      profileUrl: { type: String, default: null }, // Facebook profile URL
+
+      // NOTE: In production, store tokens encrypted / in a secrets store.
+      accessToken: { type: String, default: null },
+      expiresAt: { type: Date, default: null },
+      scope: { type: String, default: null },
+      accountType: { 
+        type: String, 
+        default: null,
+        required: false, // Make it optional
+        validate: {
+          validator: function(value) {
+            // Skip validation if value is null or undefined
+            if (value === null || value === undefined) {
+              return true; // Allow null/undefined
+            }
+            // Only validate if value is provided
+            return ['user', 'page', 'unknown'].includes(value);
+          },
+          message: 'Account type must be null, user, page, or unknown'
+        }
+      }, // Account type: 'user' (Personal), 'page' (Page/New Pages Experience), 'unknown', or null
+      stats: { type: mongoose.Schema.Types.Mixed, default: null }, // Store stats object
+      lastStatsUpdate: { type: Date, default: null },
     },
   },
 
@@ -60,6 +92,18 @@ const userSchema = new mongoose.Schema({
   isEmailVerified: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
   partnerCode: { type: String, default: null },
+  partnerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Partner',
+    default: null
+  },
+
+  // *** NEW: Points System ***
+  points: {
+    type: Number,
+    default: 1000, // New accounts get 1000 points as starting bonus
+    min: 0
+  },
 
   // *** NEW: Streak & Quest Statistics ***
   streakStats: {
@@ -91,6 +135,10 @@ const userSchema = new mongoose.Schema({
       type: Number,
       default: 0,
       min: 0
+    },
+    awardedMilestones: {
+      type: [String],
+      default: []
     },
     lastResetDate: {
       type: Date,
@@ -126,6 +174,25 @@ const userSchema = new mongoose.Schema({
       min: 0
     }
   },
+
+  // *** NEW: Approved Followers for Follow Quest Prevention ***
+  // Store TikTok usernames that have been approved for follow quests
+  // This prevents creating duplicate follow quests for the same user
+  approvedFollowers: [{
+    tiktokUsername: {
+      type: String,
+      required: true,
+      lowercase: true // Store in lowercase for case-insensitive comparison
+    },
+    approvedAt: {
+      type: Date,
+      default: Date.now
+    },
+    questId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'SocialQuest'
+    }
+  }],
 
   // *** NEW: Quest History & Achievements ***
   questHistory: [{
