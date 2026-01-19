@@ -17,7 +17,7 @@ const questSettingsSchema = new mongoose.Schema({
   category: {
     type: String,
     required: true,
-    enum: ['points', 'quests', 'social', 'streak', 'system'],
+    enum: ['points', 'quests', 'social', 'streak', 'system', 'job', 'reward'],
     default: 'points'
   },
 
@@ -175,6 +175,112 @@ questSettingsSchema.statics.getDefaultSettings = function() {
       valueType: 'number',
       minValue: 1,
       maxValue: 1000
+    },
+
+    // Job Settings
+    {
+      key: 'job_commission_fee',
+      category: 'job',
+      displayName: 'ค่านายหน้าจ้างงาน',
+      description: 'จำนวน point ที่หักจากคนจ้างงานทันทีเมื่อได้ลูกจ้างครบแล้ว (points)',
+      value: 5,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 1000
+    },
+    {
+      key: 'job_application_fee',
+      category: 'job',
+      displayName: 'ค่าธรรมเนียมการสมัครงาน',
+      description: 'จำนวน point ที่หักจากคนรับงานเมื่อนายจ้างอนุมัติ (points)',
+      value: 5,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 1000
+    },
+
+    // Delivery Settings สำหรับค่าจ้างส่งอาหาร
+    {
+      key: 'delivery_min_price',
+      category: 'job',
+      displayName: 'ค่าจ้างส่งอาหารขั้นต่ำต่อออเดอร์',
+      description: 'จำนวนเงินขั้นต่ำที่ร้านค้าต้องจ่ายให้คนส่งอาหารต่อการจัดส่ง 1 ครั้ง',
+      value: 20,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 10000
+    },
+    {
+      key: 'delivery_base_cost',
+      category: 'job',
+      displayName: 'ต้นทุนพื้นฐานค่าจัดส่งอาหาร',
+      description: 'ใช้เป็นค่าพื้นฐานในการคำนวณค่าจัดส่งอาหาร',
+      value: 20,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 10000
+    },
+    {
+      key: 'delivery_fee',
+      category: 'job',
+      displayName: 'ค่าธรรมเนียมระบบสำหรับงานส่งอาหาร',
+      description: 'ค่าธรรมเนียมที่ระบบหักจากค่าจ้างส่งอาหาร (จำนวนคงที่ บาท)',
+      value: 5,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 10000
+    },
+    {
+      key: 'delivery_default_radius_km',
+      category: 'job',
+      displayName: 'รัศมีการส่งอาหารเริ่มต้น (กิโลเมตร)',
+      description: 'รัศมีการส่งอาหารเริ่มต้นสำหรับร้านค้าใหม่ (กิโลเมตร)',
+      value: 10,
+      valueType: 'number',
+      minValue: 1,
+      maxValue: 100
+    },
+
+    // Reward Settings
+    {
+      key: 'new_user_welcome_reward_points',
+      category: 'reward',
+      displayName: 'รางวัลต้อนรับผู้ใช้ใหม่',
+      description: 'จำนวน point ที่ผู้ใช้ใหม่ได้รับเมื่อสมัคร (points)',
+      value: 500,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 10000
+    },
+    {
+      key: 'first_shop_reward_points',
+      category: 'reward',
+      displayName: 'รางวัลร้านค้าแรก',
+      description: 'จำนวน point ที่ได้รับเมื่อสร้างร้านค้าแรก (points)',
+      value: 500,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 10000
+    },
+    {
+      key: 'first_job_reward_points',
+      category: 'reward',
+      displayName: 'รางวัลเริ่มจ้างงานแรก',
+      description: 'จำนวน point ที่ได้รับเมื่อเริ่มจ้างงานแรก (points)',
+      value: 500,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 10000
+    },
+    {
+      key: 'new_partner_reward_points',
+      category: 'reward',
+      displayName: 'รางวัล Partner หน้าใหม่',
+      description: 'จำนวน point ที่ได้รับเมื่อเป็น Partner หน้าใหม่ (points)',
+      value: 500,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 10000
     }
   ];
 };
@@ -184,11 +290,44 @@ questSettingsSchema.statics.initializeDefaults = async function() {
   const defaults = this.getDefaultSettings();
   
   for (const setting of defaults) {
-    await this.findOneAndUpdate(
-      { key: setting.key },
-      { $setOnInsert: setting },
-      { upsert: true, new: true }
-    );
+    // Check if setting exists
+    const existing = await this.findOne({ key: setting.key });
+    
+    if (existing) {
+      // Update description, valueType, minValue, maxValue, category, displayName if changed in defaults
+      // But preserve value, lastModifiedBy if they were manually changed
+      const updateFields = {
+        description: setting.description,
+        valueType: setting.valueType,
+        minValue: setting.minValue,
+        maxValue: setting.maxValue,
+        displayName: setting.displayName
+      };
+      
+      // Always update category if it changed (important for migration)
+      if (existing.category !== setting.category) {
+        updateFields.category = setting.category;
+        console.log(`   🔄 Updating category for ${setting.key}: ${existing.category} → ${setting.category}`);
+      }
+      
+      // Only update value if it hasn't been manually modified (no lastModifiedBy means it's still default)
+      if (!existing.lastModifiedBy) {
+        updateFields.value = setting.value;
+      }
+      
+      await this.findOneAndUpdate(
+        { key: setting.key },
+        { $set: updateFields },
+        { new: true }
+      );
+    } else {
+      // Insert new setting
+      await this.findOneAndUpdate(
+        { key: setting.key },
+        { $setOnInsert: setting },
+        { upsert: true, new: true }
+      );
+    }
   }
   
   console.log('✅ Quest settings initialized with defaults');

@@ -46,7 +46,7 @@ async function migratePathumThaniAttractions() {
             thumbnail: attraction.thumbnail || null,
             isActive: attraction.isActive !== undefined ? attraction.isActive : true,
           };
-          
+
           // Add categories if provided
           if (attraction.categories && Array.isArray(attraction.categories)) {
             updateData.categories = attraction.categories;
@@ -54,7 +54,7 @@ async function migratePathumThaniAttractions() {
             // Convert single category to categories array
             updateData.categories = [attraction.category];
           }
-          
+
           await TouristAttraction.updateOne(
             { id: attraction.id },
             { $set: updateData }
@@ -69,12 +69,12 @@ async function migratePathumThaniAttractions() {
             michelinRating: attraction.michelinRating || null,
             michelinStars: attraction.michelinStars || null
           };
-          
+
           // Ensure categories array exists
           if (!createData.categories || !Array.isArray(createData.categories)) {
             createData.categories = createData.category ? [createData.category] : ['other'];
           }
-          
+
           await TouristAttraction.create(createData);
           console.log(`  ➕ Added: ${attraction.name}`);
           added++;

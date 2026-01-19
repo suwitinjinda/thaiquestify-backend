@@ -46,7 +46,7 @@ async function migrateNorthernProvincesAttractions() {
 
     for (const province of provinces) {
       console.log(`📦 Processing ${province.provinceName} (${province.data.length} attractions)...\n`);
-      
+
       let added = 0;
       let updated = 0;
       let skipped = 0;
@@ -55,7 +55,7 @@ async function migrateNorthernProvincesAttractions() {
         try {
           // Check if attraction already exists
           const existing = await TouristAttraction.findOne({ id: attraction.id });
-          
+
           if (existing) {
             // Update existing attraction
             await TouristAttraction.findOneAndUpdate(
@@ -92,7 +92,7 @@ async function migrateNorthernProvincesAttractions() {
           totalSkipped++;
         }
       }
-      
+
       console.log(`✅ ${province.provinceName}: ${added} added, ${updated} updated, ${skipped} skipped\n`);
     }
 

@@ -4,10 +4,15 @@ const router = express.Router();
 const { auth } = require('../middleware/auth');
 const User = require('../models/User');
 const StreakSettings = require('../models/StreakSettings');
+const QuestSettings = require('../models/QuestSettings');
 const pointSystemService = require('../services/pointSystemService');
 const PointTransaction = require('../models/PointTransaction');
 const RewardRedemption = require('../models/RewardRedemption');
 const CashReward = require('../models/CashReward');
+const Shop = require('../models/Shop');
+const Job = require('../models/Job');
+const Reward = require('../models/Reward');
+const PointSystem = require('../models/PointSystem');
 
 /**
  * POST /api/v2/rewards/claim-milestone
@@ -140,10 +145,16 @@ router.get('/claimed-milestones', auth, async (req, res) => {
   try {
     const userId = req.user.id;
     
-    // Get claimed milestones from redemption history (more reliable)
+    // Define all milestone reward IDs (including special ones)
+    const milestoneRewardIds = [
+      'streak_7', 'streak_14', 'streak_30',
+      'new_user_welcome_reward', 'first_shop_reward', 'first_job_reward', 'new_partner_reward'
+    ];
+    
+    // Get claimed milestones from redemption history by rewardId (not rewardType)
     const redemptions = await RewardRedemption.find({ 
       user: userId,
-      rewardType: 'milestone'
+      rewardId: { $in: milestoneRewardIds }
     }).select('rewardId');
     
     const claimedIds = redemptions.map(r => r.rewardId).filter(Boolean);
@@ -247,15 +258,15 @@ router.post('/redeem-cash', auth, async (req, res) => {
     const cashAmount = 300;
     const pointsRequired = 500;
 
-    // Check minimum streak requirement
-    const minimumStreakSetting = await StreakSettings.findOne({ key: 'minimum_streak_days_for_reward' });
-    const minimumStreak = minimumStreakSetting?.value || 0;
+    // All non-milestone rewards use default_reward_streak_required from admin settings
+    const defaultStreakSetting = await StreakSettings.findOne({ key: 'default_reward_streak_required' });
+    const defaultStreakRequired = defaultStreakSetting?.value || 14;
     const currentStreak = user.streakStats?.currentStreak || 0;
 
-    if (currentStreak < minimumStreak) {
+    if (defaultStreakRequired > 0 && currentStreak < defaultStreakRequired) {
       return res.status(400).json({
         success: false,
-        message: `คุณต้องมี streak อย่างน้อย ${minimumStreak} วัน แต่คุณมี streak ${currentStreak} วัน`
+        message: `คุณต้องมี streak ${defaultStreakRequired} วัน แต่คุณมี streak ${currentStreak} วัน`
       });
     }
 
@@ -289,7 +300,6 @@ router.post('/redeem-cash', auth, async (req, res) => {
 
     // Return points to system (refund to point system)
     // When user redeems cash, points are returned to the system pool
-    const PointSystem = require('../models/PointSystem');
     const pointSystem = await PointSystem.getSystem();
     
     // Refund points back to system (decrease usedPoints, increase availablePoints)
@@ -439,6 +449,434 @@ router.get('/settings', auth, async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error getting reward settings:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * POST /api/v2/rewards/claim-welcome
+ * Claim welcome reward for new users
+ */
+router.post('/claim-welcome', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบข้อมูลผู้ใช้'
+      });
+    }
+
+    // Check if already claimed
+    const existingRedemption = await RewardRedemption.findOne({
+      user: userId,
+      rewardId: 'new_user_welcome_reward'
+    });
+
+    if (existingRedemption) {
+      return res.status(400).json({
+        success: false,
+        message: 'คุณได้รับรางวัลต้อนรับผู้ใช้ใหม่แล้ว'
+      });
+    }
+
+    // Check if user is new (created within last 30 days)
+    const daysSinceSignup = (new Date() - user.createdAt) / (1000 * 60 * 60 * 24);
+    if (daysSinceSignup > 30) {
+      return res.status(400).json({
+        success: false,
+        message: 'รางวัลต้อนรับผู้ใช้ใหม่สามารถรับได้เฉพาะผู้ใช้ใหม่เท่านั้น (ภายใน 30 วัน)'
+      });
+    }
+
+    // All rewards use default_reward_streak_required from admin settings
+    const defaultStreakSetting = await StreakSettings.findOne({ key: 'default_reward_streak_required' });
+    const defaultStreakRequired = defaultStreakSetting?.value || 14;
+    if (defaultStreakRequired > 0) {
+      const currentStreak = user.streakStats?.currentStreak || 0;
+      if (currentStreak < defaultStreakRequired) {
+        return res.status(400).json({
+          success: false,
+          message: `คุณต้องมี streak ${defaultStreakRequired} วัน แต่คุณมี streak ${currentStreak} วัน`
+        });
+      }
+    }
+
+    // Get reward points from settings
+    const rewardSetting = await QuestSettings.findOne({ key: 'new_user_welcome_reward_points' });
+    const pointsToAward = rewardSetting?.value || 500; // Default 500 points
+
+    // Deduct from PointSystem (platform pays)
+    const pointSystem = await PointSystem.getSystem();
+    await pointSystem.usePoints(pointsToAward, userId);
+
+    // Add points to user (platform pays to user)
+    user.points = (user.points || 0) + pointsToAward;
+    await user.save();
+
+    // Create PointTransaction (positive amount for user - user receives)
+    await PointTransaction.create({
+      type: 'reward',
+      amount: pointsToAward, // Positive: user receives
+      userId: userId,
+      description: 'ได้รับรางวัลต้อนรับผู้ใช้ใหม่',
+      status: 'completed'
+    });
+
+    // Create redemption record
+    const redemption = await RewardRedemption.create({
+      user: userId,
+      rewardId: 'new_user_welcome_reward',
+      rewardName: 'รางวัลต้อนรับผู้ใช้ใหม่',
+      rewardType: 'points',
+      pointsAwarded: pointsToAward,
+      pointsUsed: 0,
+      description: `รับ ${pointsToAward} คะแนนต้อนรับผู้ใช้ใหม่`
+    });
+
+    console.log(`🎉 User ${userId} claimed welcome reward, awarded ${pointsToAward} points`);
+
+    res.json({
+      success: true,
+      message: `รับรางวัลต้อนรับผู้ใช้ใหม่ ${pointsToAward} คะแนนสำเร็จแล้ว`,
+      data: {
+        pointsAwarded: pointsToAward,
+        newPoints: user.points,
+        redemptionId: redemption._id
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error claiming welcome reward:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาดในการรับรางวัล'
+    });
+  }
+});
+
+/**
+ * POST /api/v2/rewards/claim-first-shop
+ * Claim first shop reward (auto-claimed when first shop is created)
+ */
+router.post('/claim-first-shop', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบข้อมูลผู้ใช้'
+      });
+    }
+
+    // Check if already claimed
+    const existingRedemption = await RewardRedemption.findOne({
+      user: userId,
+      rewardId: 'first_shop_reward'
+    });
+
+    if (existingRedemption) {
+      return res.status(400).json({
+        success: false,
+        message: 'คุณได้รับรางวัลร้านค้าแรกแล้ว'
+      });
+    }
+
+    // Check if user has at least one shop
+    // Shop model has 'user' field, 'partnerId', and 'ownerEmail' (not 'owner')
+    const shopCount = await Shop.countDocuments({ 
+      $or: [
+        { user: userId },
+        { partnerId: userId },
+        { ownerEmail: user.email }
+      ]
+    });
+    if (shopCount === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'คุณยังไม่มีร้านค้า'
+      });
+    }
+
+    // All rewards use default_reward_streak_required from admin settings
+    const defaultStreakSetting = await StreakSettings.findOne({ key: 'default_reward_streak_required' });
+    const defaultStreakRequired = defaultStreakSetting?.value || 14;
+    if (defaultStreakRequired > 0) {
+      const currentStreak = user.streakStats?.currentStreak || 0;
+      if (currentStreak < defaultStreakRequired) {
+        return res.status(400).json({
+          success: false,
+          message: `คุณต้องมี streak ${defaultStreakRequired} วัน แต่คุณมี streak ${currentStreak} วัน`
+        });
+      }
+    }
+
+    // Get reward points from settings
+    const rewardSetting = await QuestSettings.findOne({ key: 'first_shop_reward_points' });
+    const pointsToAward = rewardSetting?.value || 500; // Default 500 points
+
+    // Deduct from PointSystem (platform pays)
+    const pointSystem = await PointSystem.getSystem();
+    await pointSystem.usePoints(pointsToAward, userId);
+
+    // Add points to user (platform pays to user)
+    user.points = (user.points || 0) + pointsToAward;
+    await user.save();
+
+    // Create PointTransaction (positive amount for user - user receives)
+    await PointTransaction.create({
+      type: 'reward',
+      amount: pointsToAward, // Positive: user receives
+      userId: userId,
+      description: 'ได้รับรางวัลร้านค้าแรก',
+      status: 'completed'
+    });
+
+    // Create redemption record
+    const redemption = await RewardRedemption.create({
+      user: userId,
+      rewardId: 'first_shop_reward',
+      rewardName: 'รางวัลร้านค้าแรก',
+      rewardType: 'points',
+      pointsAwarded: pointsToAward,
+      pointsUsed: 0,
+      description: `รับ ${pointsToAward} คะแนนเมื่อสร้างร้านค้าแรก`
+    });
+
+    console.log(`🎉 User ${userId} claimed first shop reward, awarded ${pointsToAward} points`);
+
+    res.json({
+      success: true,
+      message: `รับรางวัลร้านค้าแรก ${pointsToAward} คะแนนสำเร็จแล้ว`,
+      data: {
+        pointsAwarded: pointsToAward,
+        newPoints: user.points,
+        redemptionId: redemption._id
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error claiming first shop reward:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาดในการรับรางวัล'
+    });
+  }
+});
+
+/**
+ * POST /api/v2/rewards/claim-new-partner
+ * Claim new partner reward (auto-claimed when becoming a partner)
+ */
+router.post('/claim-new-partner', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบข้อมูลผู้ใช้'
+      });
+    }
+
+    // Check if user is a partner
+    if (!user.partnerId && !user.partnerCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'คุณยังไม่ใช่ Partner'
+      });
+    }
+
+    // Check if already claimed
+    const existingRedemption = await RewardRedemption.findOne({
+      user: userId,
+      rewardId: 'new_partner_reward'
+    });
+
+    if (existingRedemption) {
+      return res.status(400).json({
+        success: false,
+        message: 'คุณได้รับรางวัล Partner หน้าใหม่แล้ว'
+      });
+    }
+
+    // All rewards use default_reward_streak_required from admin settings
+    const defaultStreakSetting = await StreakSettings.findOne({ key: 'default_reward_streak_required' });
+    const defaultStreakRequired = defaultStreakSetting?.value || 14;
+    if (defaultStreakRequired > 0) {
+      const currentStreak = user.streakStats?.currentStreak || 0;
+      if (currentStreak < defaultStreakRequired) {
+        return res.status(400).json({
+          success: false,
+          message: `คุณต้องมี streak ${defaultStreakRequired} วัน แต่คุณมี streak ${currentStreak} วัน`
+        });
+      }
+    }
+
+    // Get reward points from settings
+    const rewardSetting = await QuestSettings.findOne({ key: 'new_partner_reward_points' });
+    const pointsToAward = rewardSetting?.value || 500; // Default 500 points
+
+    // Deduct from PointSystem (platform pays)
+    const pointSystem = await PointSystem.getSystem();
+    await pointSystem.usePoints(pointsToAward, userId);
+
+    // Add points to user (platform pays to user)
+    user.points = (user.points || 0) + pointsToAward;
+    await user.save();
+
+    // Create PointTransaction (positive amount for user - user receives)
+    await PointTransaction.create({
+      type: 'reward',
+      amount: pointsToAward, // Positive: user receives
+      userId: userId,
+      description: 'ได้รับรางวัล Partner หน้าใหม่',
+      status: 'completed'
+    });
+
+    // Create redemption record
+    const redemption = await RewardRedemption.create({
+      user: userId,
+      rewardId: 'new_partner_reward',
+      rewardName: 'รางวัล Partner หน้าใหม่',
+      rewardType: 'points',
+      pointsAwarded: pointsToAward,
+      pointsUsed: 0,
+      description: `รับ ${pointsToAward} คะแนนเมื่อเป็น Partner หน้าใหม่`
+    });
+
+    console.log(`🎉 User ${userId} claimed new partner reward, awarded ${pointsToAward} points`);
+
+    res.json({
+      success: true,
+      message: `รับรางวัล Partner หน้าใหม่ ${pointsToAward} คะแนนสำเร็จแล้ว`,
+      data: {
+        pointsAwarded: pointsToAward,
+        newPoints: user.points,
+        redemptionId: redemption._id
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error claiming new partner reward:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาดในการรับรางวัล'
+    });
+  }
+});
+
+/**
+ * GET /api/v2/rewards/available
+ * Get list of available rewards for the user
+ */
+router.get('/available', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบข้อมูลผู้ใช้'
+      });
+    }
+
+    // Get all claimed rewards
+    const claimedRewards = await RewardRedemption.find({ user: userId })
+      .select('rewardId');
+    const claimedIds = claimedRewards.map(r => r.rewardId);
+
+    // Get reward settings
+    const welcomeReward = await QuestSettings.findOne({ key: 'new_user_welcome_reward_points' });
+    const firstShopReward = await QuestSettings.findOne({ key: 'first_shop_reward_points' });
+    const newPartnerReward = await QuestSettings.findOne({ key: 'new_partner_reward_points' });
+
+    // Check conditions
+    const daysSinceSignup = (new Date() - user.createdAt) / (1000 * 60 * 60 * 24);
+    // Shop model has 'user' field (not 'owner'), also check 'partnerId' and 'ownerEmail'
+    const shopCount = await Shop.countDocuments({ 
+      $or: [
+        { user: userId },
+        { partnerId: userId },
+        { ownerEmail: user.email }
+      ]
+    });
+    const isPartner = !!(user.partnerId || user.partnerCode);
+
+    const availableRewards = [];
+
+    // Welcome reward
+    if (!claimedIds.includes('new_user_welcome_reward') && daysSinceSignup <= 30) {
+      availableRewards.push({
+        rewardId: 'new_user_welcome_reward',
+        rewardName: 'รางวัลต้อนรับผู้ใช้ใหม่',
+        points: welcomeReward?.value || 500,
+        description: 'รับคะแนนต้อนรับเมื่อสมัครใหม่',
+        canClaim: true
+      });
+    }
+
+    // First shop reward
+    if (!claimedIds.includes('first_shop_reward') && shopCount > 0) {
+      availableRewards.push({
+        rewardId: 'first_shop_reward',
+        rewardName: 'รางวัลร้านค้าแรก',
+        points: firstShopReward?.value || 500,
+        description: 'รับคะแนนเมื่อสร้างร้านค้าแรก',
+        canClaim: true
+      });
+    }
+
+    // New partner reward
+    if (!claimedIds.includes('new_partner_reward') && isPartner) {
+      availableRewards.push({
+        rewardId: 'new_partner_reward',
+        rewardName: 'รางวัล Partner หน้าใหม่',
+        points: newPartnerReward?.value || 500,
+        description: 'รับคะแนนเมื่อเป็น Partner หน้าใหม่',
+        canClaim: true
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        availableRewards,
+        claimedCount: claimedIds.length
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error getting available rewards:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * GET /api/v2/rewards
+ * Get all active rewards (for users to view and claim)
+ */
+router.get('/', auth, async (req, res) => {
+  try {
+    // Get only active rewards, sorted by order
+    const rewards = await Reward.find({ active: true })
+      .sort({ order: 1, createdAt: -1 })
+      .select('rewardId name description category pointsRequired streakRequired cashAmount isMilestone image order');
+
+    res.json({
+      success: true,
+      data: rewards
+    });
+  } catch (error) {
+    console.error('❌ Error getting rewards:', error);
     res.status(500).json({
       success: false,
       message: error.message || 'เกิดข้อผิดพลาด'

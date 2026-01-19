@@ -18,7 +18,7 @@ const TouristAttraction = require('../models/TouristAttraction');
 const addCheckInLocation = async (attractionId, latitude, longitude, userId, distance = null) => {
   try {
     const attraction = await TouristAttraction.findOne({ id: attractionId });
-    
+
     if (!attraction) {
       return {
         success: false,
@@ -120,7 +120,7 @@ const calculateAverageCoordinates = (checkInLocations) => {
 const updateCoordinatesFromCheckIns = async (attractionId) => {
   try {
     const attraction = await TouristAttraction.findOne({ id: attractionId });
-    
+
     if (!attraction) {
       return {
         success: false,
@@ -240,7 +240,7 @@ const updateCoordinatesFromCheckIns = async (attractionId) => {
 const getCheckInStats = async (attractionId) => {
   try {
     const attraction = await TouristAttraction.findOne({ id: attractionId });
-    
+
     if (!attraction) {
       return {
         success: false,

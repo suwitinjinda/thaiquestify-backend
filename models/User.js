@@ -51,12 +51,12 @@ const userSchema = new mongoose.Schema({
       accessToken: { type: String, default: null },
       expiresAt: { type: Date, default: null },
       scope: { type: String, default: null },
-      accountType: { 
-        type: String, 
+      accountType: {
+        type: String,
         default: null,
         required: false, // Make it optional
         validate: {
-          validator: function(value) {
+          validator: function (value) {
             // Skip validation if value is null or undefined
             if (value === null || value === undefined) {
               return true; // Allow null/undefined
@@ -87,6 +87,23 @@ const userSchema = new mongoose.Schema({
   // ข้อมูลส่วนตัว (existing)
   photo: { type: String, default: '' },
   phone: { type: String, default: '' },
+  address: { type: String, default: '' },
+  district: { type: String, default: '' },
+  province: { type: String, default: '' },
+
+  // Bank account information
+  bankAccount: {
+    accountName: { type: String, default: '' },
+    accountNumber: { type: String, default: '' },
+    bankName: { type: String, default: '' },
+    bankBranch: { type: String, default: '' }
+  },
+
+  // GPS coordinates (for location-based features)
+  coordinates: {
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null }
+  },
 
   // การยืนยันและสถานะ (existing)
   isEmailVerified: { type: Boolean, default: false },
@@ -101,7 +118,14 @@ const userSchema = new mongoose.Schema({
   // *** NEW: Points System ***
   points: {
     type: Number,
-    default: 1000, // New accounts get 1000 points as starting bonus
+    default: 0, // New users start with 0 points - they need to claim welcome reward
+    min: 0
+  },
+
+  // *** NEW: Cash Balance (for job hiring) ***
+  cash: {
+    type: Number,
+    default: 500, // New accounts get 500 baht as starting cash
     min: 0
   },
 
@@ -172,6 +196,66 @@ const userSchema = new mongoose.Schema({
       type: Number,
       default: 0,
       min: 0
+    }
+  },
+
+  // *** NEW: Job Hiring Statistics ***
+  jobStats: {
+    // As Employer (คนจ้างงาน)
+    employer: {
+      totalJobsPosted: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      totalJobsCompleted: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      totalCashSpent: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      totalFeesPaid: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      activeJobs: {
+        type: Number,
+        default: 0,
+        min: 0
+      }
+    },
+    // As Worker (คนรับงาน)
+    worker: {
+      totalJobsApplied: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      totalJobsAccepted: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      totalJobsCompleted: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      totalCashEarned: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      activeJobs: {
+        type: Number,
+        default: 0,
+        min: 0
+      }
     }
   },
 
@@ -258,6 +342,31 @@ const userSchema = new mongoose.Schema({
     points: Number
   }],
 
+  // *** NEW: Delivery Worker Profile (สำหรับงานส่งอาหาร) ***
+  deliveryProfile: {
+    isEnabled: {
+      type: Boolean,
+      default: false
+    },
+    // GeoJSON point: [longitude, latitude]
+    location: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point'
+      },
+      coordinates: {
+        type: [Number],
+        default: undefined
+      }
+    },
+    radiusKm: {
+      type: Number,
+      default: 5,
+      min: 0
+    }
+  },
+
   // *** NEW: Notification Settings ***
   notificationSettings: {
     streakReminder: {
@@ -286,8 +395,21 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Middleware to check and reset daily streak
+// 2dsphere index สำหรับค้นหา delivery worker ตาม location (sparse = index เฉพาะที่มี coordinates)
+userSchema.index({ 'deliveryProfile.location': '2dsphere' }, { sparse: true });
+
+// Middleware to clean up invalid deliveryProfile.location before save
 userSchema.pre('save', function (next) {
+  // ถ้า deliveryProfile.location มี type แต่ไม่มี coordinates ให้ลบ location ออก
+  if (this.deliveryProfile && this.deliveryProfile.location) {
+    const loc = this.deliveryProfile.location;
+    // ถ้ามี type แต่ไม่มี coordinates หรือ coordinates ไม่ถูกต้อง ให้ลบ location
+    if (loc.type && (!loc.coordinates || !Array.isArray(loc.coordinates) || loc.coordinates.length !== 2)) {
+      // ใช้ $unset ใน Mongoose (set เป็น undefined)
+      this.deliveryProfile.location = undefined;
+    }
+  }
+
   if (this.isModified('streakStats.lastQuestDate') || !this.streakStats.lastQuestDate) {
     const now = new Date();
     const lastQuestDate = this.streakStats.lastQuestDate ? new Date(this.streakStats.lastQuestDate) : null;

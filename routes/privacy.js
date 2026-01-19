@@ -200,7 +200,7 @@ router.get('/privacy-policy', (req, res) => {
     </body>
     </html>
   `;
-  
+
   res.set('Content-Type', 'text/html; charset=UTF-8');
   res.status(200).send(html);
 });
@@ -322,7 +322,7 @@ router.get('/data-deletion', (req, res) => {
     </body>
     </html>
   `;
-  
+
   res.set('Content-Type', 'text/html; charset=UTF-8');
   res.status(200).send(html);
 });
@@ -338,16 +338,16 @@ router.post('/data-deletion-callback', async (req, res) => {
   console.log('   Headers:', JSON.stringify(req.headers, null, 2));
   console.log('   Body:', JSON.stringify(req.body, null, 2));
   console.log('🔔 [DEBUG] ============================================');
-  
+
   const { signed_request } = req.body;
-  
+
   if (!signed_request) {
     console.error('❌ [DEBUG] Missing signed_request parameter');
     return res.status(400).json({
       error: 'Missing signed_request parameter'
     });
   }
-  
+
   // Parse signed_request (Facebook sends data in signed_request format)
   // Format: base64url(header).base64url(payload)
   try {
@@ -355,35 +355,35 @@ router.post('/data-deletion-callback', async (req, res) => {
     if (parts.length !== 2) {
       throw new Error('Invalid signed_request format');
     }
-    
+
     // Decode payload (we don't need to verify signature for this use case)
     const payload = Buffer.from(parts[1], 'base64').toString('utf-8');
     const data = JSON.parse(payload);
-    
+
     console.log('🔔 [DEBUG] Parsed signed_request:', JSON.stringify(data, null, 2));
-    
+
     const userId = data.user_id;
     const confirmationCode = data.confirmation_code || `DEL_${Date.now()}`;
-    
+
     if (!userId) {
       console.error('❌ [DEBUG] Missing user_id in signed_request');
       return res.status(400).json({
         error: 'Missing user_id in signed_request'
       });
     }
-    
+
     // Find user by Facebook user ID
     const User = require('../models/User');
     const user = await User.findOne({
       'integrations.facebook.userId': userId
     });
-    
+
     if (user) {
       console.log('✅ [DEBUG] User found for Facebook ID:', userId);
       console.log('   User ID:', user._id);
       console.log('   Email:', user.email);
       console.log('   Name:', user.name);
-      
+
       // Delete Facebook integration data
       if (user.integrations?.facebook) {
         const oldFacebookData = { ...user.integrations.facebook };
@@ -405,33 +405,33 @@ router.post('/data-deletion-callback', async (req, res) => {
         console.log('✅ [DEBUG] Facebook integration data deleted');
         console.log('   Old data:', JSON.stringify(oldFacebookData, null, 2));
       }
-      
+
       // Return confirmation code to Facebook
       const response = {
         url: `https://thaiquestify.com/facebook/data-deletion?confirmation_code=${confirmationCode}`,
         confirmation_code: confirmationCode
       };
-      
+
       console.log('✅ [DEBUG] Returning response to Facebook:', JSON.stringify(response, null, 2));
-      
+
       return res.status(200).json(response);
     } else {
       console.log('⚠️ [DEBUG] User not found for Facebook ID:', userId);
       console.log('   This may mean the user has already deleted their data or never connected Facebook');
-      
+
       // Return confirmation code even if user not found (user might have already deleted)
       const response = {
         url: `https://thaiquestify.com/facebook/data-deletion?confirmation_code=${confirmationCode}`,
         confirmation_code: confirmationCode
       };
-      
+
       return res.status(200).json(response);
     }
   } catch (error) {
     console.error('❌ [DEBUG] Error processing data deletion callback:', error);
     console.error('   Error message:', error.message);
     console.error('   Error stack:', error.stack);
-    
+
     return res.status(500).json({
       error: 'Failed to process data deletion request',
       message: error.message
@@ -443,7 +443,7 @@ router.post('/data-deletion-callback', async (req, res) => {
 router.get('/data-deletion-callback', async (req, res) => {
   console.log('🔔 [DEBUG] Facebook Data Deletion Callback (GET)');
   console.log('   Query:', JSON.stringify(req.query, null, 2));
-  
+
   // Facebook typically uses POST, but handle GET for testing/verification
   return res.status(200).json({
     message: 'Data deletion callback endpoint is active',
@@ -710,7 +710,7 @@ router.get('/terms-of-service', (req, res) => {
     </body>
     </html>
   `;
-  
+
   res.set('Content-Type', 'text/html; charset=UTF-8');
   res.status(200).send(html);
 });

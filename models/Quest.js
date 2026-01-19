@@ -5,14 +5,14 @@ const questSchema = new mongoose.Schema({
   name: { type: String, required: true },
   description: { type: String, required: true },
   template: { type: mongoose.Schema.Types.ObjectId, ref: 'QuestTemplate' },
-  
+
   // Shop reference (use both shopId and shop ObjectId)
   shopId: { type: String, required: false }, // The shop ID string (optional for tourist quests)
   shop: { type: mongoose.Schema.Types.ObjectId, ref: 'Shop', required: false }, // Shop reference (optional for tourist quests)
-  
+
   // Tourist quest reference (for tourist attraction quests)
   touristId: { type: String, required: false }, // Tourist attraction ID
-  
+
   // Quest configuration
   budget: { type: Number, required: true },
   rewardAmount: { type: Number, required: true },
@@ -20,7 +20,7 @@ const questSchema = new mongoose.Schema({
   maxParticipants: { type: Number, required: true },
   currentParticipants: { type: Number, default: 0 },
   duration: { type: Number, default: 7 }, // in days
-  
+
   // Quest type and verification
   type: {
     type: String,
@@ -41,23 +41,23 @@ const questSchema = new mongoose.Schema({
     of: mongoose.Schema.Types.Mixed,
     default: {}
   },
-  
+
   // Facebook-specific fields
   facebookPageId: { type: String },
   facebookPageName: { type: String },
   facebookPageUrl: { type: String },
-  
+
   // Location-specific fields
   locationName: { type: String },
   address: { type: String },
   coordinates: { type: String },
   radius: { type: Number, default: 100 },
-  
+
   // Tourist quest fields
   isTouristQuest: { type: Boolean, default: false },
   touristAttractionId: { type: String },
   isOneTimeQuest: { type: Boolean, default: false },
-  
+
   // Quest status
   status: {
     type: String,
@@ -71,8 +71,8 @@ const questSchema = new mongoose.Schema({
   submissions: [{
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     evidence: { type: String },
-    status: { 
-      type: String, 
+    status: {
+      type: String,
       enum: ['pending', 'approved', 'rejected', 'paid'],
       default: 'pending'
     },
@@ -81,7 +81,7 @@ const questSchema = new mongoose.Schema({
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     comments: { type: String }
   }],
-  
+
   // Metadata
   isActive: { type: Boolean, default: true },
   isDeleted: { type: Boolean, default: false },
@@ -97,7 +97,7 @@ questSchema.index({ endDate: 1 });
 questSchema.index({ createdBy: 1 });
 
 // Virtual for days remaining
-questSchema.virtual('daysRemaining').get(function() {
+questSchema.virtual('daysRemaining').get(function () {
   const now = new Date();
   const end = new Date(this.endDate);
   const diffTime = end - now;
@@ -108,18 +108,18 @@ questSchema.virtual('daysRemaining').get(function() {
 module.exports = mongoose.model('Quest', questSchema);
 
 // Generate unique QR code before saving
-questSchema.pre('save', async function(next) {
+questSchema.pre('save', async function (next) {
   // Calculate end date based on duration
   if (this.isModified('duration') || this.isNew) {
     this.endDate = new Date(this.startDate);
     this.endDate.setDate(this.endDate.getDate() + this.duration);
   }
-  
+
   // Generate unique QR code if not provided
   if (!this.qrCode) {
     this.qrCode = await generateUniqueQRCode();
   }
-  
+
   next();
 });
 
@@ -128,23 +128,23 @@ async function generateUniqueQRCode() {
   const Quest = mongoose.model('Quest');
   let isUnique = false;
   let qrCode;
-  
+
   while (!isUnique) {
     // Generate random QR code (you can use any format you prefer)
     qrCode = `QR-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
+
     // Check if QR code already exists
     const existingQuest = await Quest.findOne({ qrCode });
     if (!existingQuest) {
       isUnique = true;
     }
   }
-  
+
   return qrCode;
 }
 
 // Calculate end date based on duration
-questSchema.pre('save', function(next) {
+questSchema.pre('save', function (next) {
   if (this.isModified('duration') || this.isNew) {
     this.endDate = new Date(this.startDate);
     this.endDate.setDate(this.endDate.getDate() + this.duration);
@@ -153,14 +153,14 @@ questSchema.pre('save', function(next) {
 });
 
 // Update total spent when submissions are approved
-questSchema.methods.updateTotalSpent = async function() {
+questSchema.methods.updateTotalSpent = async function () {
   const approvedCount = this.submissions.filter(sub => sub.status === 'approved').length;
   this.totalSpent = approvedCount * this.rewardAmount;
   await this.save();
 };
 
 // Soft delete method
-questSchema.methods.softDelete = async function() {
+questSchema.methods.softDelete = async function () {
   this.isDeleted = true;
   this.isActive = false;
   this.status = 'cancelled';
@@ -168,7 +168,7 @@ questSchema.methods.softDelete = async function() {
 };
 
 // Only include non-deleted quests by default
-questSchema.pre(/^find/, function(next) {
+questSchema.pre(/^find/, function (next) {
   this.where({ isDeleted: { $ne: true } });
   next();
 });

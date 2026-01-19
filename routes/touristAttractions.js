@@ -9,14 +9,14 @@ const TouristAttraction = require('../models/TouristAttraction');
 router.get('/', async (req, res) => {
   try {
     const { province, category, search } = req.query;
-    
+
     // Build query
     const query = { isActive: true };
-    
+
     if (province) {
       query.province = province;
     }
-    
+
     if (category) {
       // Support both old single category and new categories array
       // MongoDB automatically matches array fields if any element matches
@@ -26,7 +26,7 @@ router.get('/', async (req, res) => {
         { categories: category } // New categories array field
       ];
     }
-    
+
     if (search) {
       // Normalize search term for province matching
       const searchLower = search.toLowerCase().trim();
@@ -230,7 +230,7 @@ router.get('/', async (req, res) => {
         'นราธิวาส': 'นราธิวาส',
         'narathiwat': 'นราธิวาส'
       };
-      
+
       // Check if search term matches a province name
       const matchedProvince = provinceMatch[searchLower];
       if (matchedProvince) {
@@ -244,9 +244,9 @@ router.get('/', async (req, res) => {
         ];
       }
     }
-    
+
     const attractions = await TouristAttraction.find(query).sort({ name: 1 });
-    
+
     res.json({
       success: true,
       data: attractions,
@@ -270,14 +270,14 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const attraction = await TouristAttraction.findOne({ id: id, isActive: true });
-    
+
     if (!attraction) {
       return res.status(404).json({
         success: false,
         message: 'ไม่พบสถานที่ท่องเที่ยว'
       });
     }
-    
+
     res.json({
       success: true,
       data: attraction
@@ -300,14 +300,14 @@ router.patch('/:id/coordinates', async (req, res) => {
   try {
     const { id } = req.params;
     const { latitude, longitude, source } = req.body;
-    
+
     if (!latitude || !longitude) {
       return res.status(400).json({
         success: false,
         message: 'Latitude and longitude are required'
       });
     }
-    
+
     // Validate coordinates
     if (typeof latitude !== 'number' || typeof longitude !== 'number') {
       return res.status(400).json({
@@ -315,14 +315,14 @@ router.patch('/:id/coordinates', async (req, res) => {
         message: 'Latitude and longitude must be numbers'
       });
     }
-    
+
     if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
       return res.status(400).json({
         success: false,
         message: 'Invalid coordinate values'
       });
     }
-    
+
     // Update coordinates in database
     const updated = await TouristAttraction.findOneAndUpdate(
       { id: id },
@@ -336,14 +336,14 @@ router.patch('/:id/coordinates', async (req, res) => {
       },
       { new: true }
     );
-    
+
     if (!updated) {
       return res.status(404).json({
         success: false,
         message: 'Tourist attraction not found'
       });
     }
-    
+
     res.json({
       success: true,
       message: 'Coordinates updated successfully',
@@ -370,7 +370,7 @@ router.get('/province/:province', async (req, res) => {
       province: province,
       isActive: true
     }).sort({ name: 1 });
-    
+
     res.json({
       success: true,
       data: attractions,
@@ -398,7 +398,7 @@ router.get('/category/:category', async (req, res) => {
       category: category,
       isActive: true
     }).sort({ name: 1 });
-    
+
     res.json({
       success: true,
       data: attractions,
@@ -423,16 +423,16 @@ router.get('/:id/check-in-stats', async (req, res) => {
   try {
     const { id } = req.params;
     const autoCoordinateUpdateService = require('../services/autoCoordinateUpdateService');
-    
+
     const result = await autoCoordinateUpdateService.getCheckInStats(id);
-    
+
     if (!result.success) {
       return res.status(404).json({
         success: false,
         message: result.message || 'ไม่พบข้อมูล'
       });
     }
-    
+
     res.json({
       success: true,
       data: result.stats
@@ -455,20 +455,20 @@ router.patch('/:id/auto-update-settings', async (req, res) => {
   try {
     const { id } = req.params;
     const { autoUpdateEnabled, minCheckInsForUpdate } = req.body;
-    
+
     const attraction = await TouristAttraction.findOne({ id: id });
-    
+
     if (!attraction) {
       return res.status(404).json({
         success: false,
         message: 'ไม่พบสถานที่ท่องเที่ยว'
       });
     }
-    
+
     if (autoUpdateEnabled !== undefined) {
       attraction.autoUpdateEnabled = autoUpdateEnabled;
     }
-    
+
     if (minCheckInsForUpdate !== undefined) {
       if (typeof minCheckInsForUpdate !== 'number' || minCheckInsForUpdate < 1) {
         return res.status(400).json({
@@ -478,9 +478,9 @@ router.patch('/:id/auto-update-settings', async (req, res) => {
       }
       attraction.minCheckInsForUpdate = minCheckInsForUpdate;
     }
-    
+
     await attraction.save();
-    
+
     res.json({
       success: true,
       message: 'อัปเดตการตั้งค่าสำเร็จ',
@@ -507,16 +507,16 @@ router.post('/:id/force-update-coordinates', async (req, res) => {
   try {
     const { id } = req.params;
     const autoCoordinateUpdateService = require('../services/autoCoordinateUpdateService');
-    
+
     const result = await autoCoordinateUpdateService.updateCoordinatesFromCheckIns(id);
-    
+
     if (!result.success) {
       return res.status(400).json({
         success: false,
         message: result.message || 'ไม่สามารถอัปเดตพิกัดได้'
       });
     }
-    
+
     if (!result.updated) {
       return res.json({
         success: true,
@@ -524,7 +524,7 @@ router.post('/:id/force-update-coordinates', async (req, res) => {
         message: result.message || 'ยังไม่สามารถอัปเดตพิกัดได้ (อาจยังไม่มีข้อมูลเพียงพอ)'
       });
     }
-    
+
     res.json({
       success: true,
       updated: true,

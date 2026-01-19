@@ -60,18 +60,16 @@ async function uploadImage(imageBuffer, fileName, mimeType = 'image/jpeg') {
     const bucket = storage.bucket(BUCKET_NAME);
     const file = bucket.file(fileName);
 
-    // Upload file
+    // Upload file (without ACL - bucket uses Uniform bucket-level access)
     await file.save(imageBuffer, {
       metadata: {
         contentType: mimeType,
       },
-      public: true, // Make file publicly accessible
+      // Note: Removed 'public: true' and makePublic() because bucket uses Uniform bucket-level access
+      // If bucket IAM policy allows public read, files will be accessible automatically
     });
 
-    // Make file publicly accessible
-    await file.makePublic();
-
-    // Return public URL
+    // Return public URL (assuming bucket IAM allows public read)
     const publicUrl = `https://storage.googleapis.com/${BUCKET_NAME}/${fileName}`;
     console.log(`✅ Image uploaded to GCP: ${publicUrl}`);
     
@@ -120,6 +118,87 @@ function getFileExtension(mimeType) {
 }
 
 /**
+ * Generate a signed URL for accessing a file (valid for 1 year)
+ * @param {String} fileUrl - Full URL or file path
+ * @returns {Promise<String>} Signed URL
+ */
+async function getSignedUrl(fileUrl) {
+  try {
+    if (!fileUrl || typeof fileUrl !== 'string') {
+      console.warn('⚠️ Invalid fileUrl provided to getSignedUrl:', fileUrl);
+      return fileUrl;
+    }
+
+    // Extract file path from URL
+    let fileName;
+    if (fileUrl.includes(`${BUCKET_NAME}/`)) {
+      // URL contains bucket name: https://storage.googleapis.com/thaiquestify/shops/...
+      fileName = fileUrl.split(`${BUCKET_NAME}/`)[1];
+    } else if (fileUrl.includes('storage.googleapis.com/')) {
+      // Full GCS URL: https://storage.googleapis.com/bucket-name/path
+      const parts = fileUrl.split('storage.googleapis.com/')[1];
+      fileName = parts.split('/').slice(1).join('/'); // Remove bucket name, keep path
+    } else if (fileUrl.startsWith('shops/')) {
+      // Already a path: shops/shopId/image.jpg
+      fileName = fileUrl;
+    } else {
+      // Assume it's already a file path
+      fileName = fileUrl;
+    }
+
+    if (!fileName) {
+      console.warn('⚠️ Could not extract fileName from URL:', fileUrl);
+      return fileUrl;
+    }
+
+    const bucket = storage.bucket(BUCKET_NAME);
+    const file = bucket.file(fileName);
+
+    // Check if file exists (optional, but helps with debugging)
+    const [exists] = await file.exists();
+    if (!exists) {
+      console.warn(`⚠️ File does not exist in bucket: ${fileName}`);
+      return fileUrl; // Return original URL if file doesn't exist
+    }
+
+    // Generate signed URL valid for 1 year
+    const [signedUrl] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 365 * 24 * 60 * 60 * 1000, // 1 year from now
+    });
+
+    console.log(`✅ Generated signed URL for: ${fileName.substring(0, 50)}...`);
+    return signedUrl;
+  } catch (error) {
+    console.error('❌ Error generating signed URL:', error);
+    console.error('   URL:', fileUrl);
+    // Return original URL if signed URL generation fails
+    return fileUrl;
+  }
+}
+
+/**
+ * Generate signed URLs for multiple image URLs
+ * @param {Array<String>} imageUrls - Array of image URLs
+ * @returns {Promise<Array<String>>} Array of signed URLs
+ */
+async function getSignedUrls(imageUrls) {
+  if (!Array.isArray(imageUrls) || imageUrls.length === 0) {
+    return [];
+  }
+
+  try {
+    const signedUrlPromises = imageUrls.map(url => getSignedUrl(url));
+    const signedUrls = await Promise.all(signedUrlPromises);
+    console.log(`✅ Generated ${signedUrls.length} signed URLs`);
+    return signedUrls;
+  } catch (error) {
+    console.error('❌ Error generating signed URLs:', error);
+    return imageUrls; // Return original URLs if generation fails
+  }
+}
+
+/**
  * Delete image from GCP bucket
  * @param {String} fileUrl - Full URL or file path
  */
@@ -145,4 +224,6 @@ module.exports = {
   uploadImage,
   uploadShopImages,
   deleteImage,
+  getSignedUrl,
+  getSignedUrls,
 };

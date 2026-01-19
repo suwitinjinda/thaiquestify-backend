@@ -32,10 +32,10 @@ const shopRequestSchema = new mongoose.Schema({
     default: null
   },
   
-  // Status: pending (waiting for partner), contacted (partner contacted), registered (shop registered), rejected
+  // Status: pending (waiting for partner), contacted (partner contacted), submitted (partner submitted form, waiting admin approval), registered (admin approved), rejected
   status: {
     type: String,
-    enum: ['pending', 'contacted', 'registered', 'rejected'],
+    enum: ['pending', 'contacted', 'submitted', 'registered', 'rejected'],
     default: 'pending'
   },
   
@@ -50,6 +50,13 @@ const shopRequestSchema = new mongoose.Schema({
   assignedPartnerId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
+    default: null,
+    index: true
+  },
+  
+  // Partner code assigned to this request (for easier identification)
+  assignedPartnerCode: {
+    type: String,
     default: null,
     index: true
   },

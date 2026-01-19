@@ -134,8 +134,8 @@ const getAttractionById = (id) => {
 };
 
 const getAttractionsByCategory = (category) => {
-  return uttaraditAttractions.filter(attraction => 
-    attraction.isActive && 
+  return uttaraditAttractions.filter(attraction =>
+    attraction.isActive &&
     (attraction.category === category || attraction.categories.includes(category))
   );
 };

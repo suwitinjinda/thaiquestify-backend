@@ -33,7 +33,7 @@ async function removeBangkokGenericMichelin() {
     // Count entries
     const countSelected = await TouristAttraction.countDocuments(querySelected);
     const countBib = await TouristAttraction.countDocuments(queryBib);
-    
+
     console.log(`📊 Found ${countSelected} entries matching "Bangkok Michelin Selected xx"`);
     console.log(`📊 Found ${countBib} entries matching "Bangkok Bib Gourmand xx"`);
 

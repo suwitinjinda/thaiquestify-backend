@@ -10,6 +10,7 @@ const Partner = require('../models/Partner');
 const PointSystem = require('../models/PointSystem');
 const PointTransaction = require('../models/PointTransaction');
 const CashReward = require('../models/CashReward');
+const Reward = require('../models/Reward');
 
 /**
  * GET /api/v2/admin/dashboard
@@ -709,7 +710,7 @@ router.get('/settings', auth, adminAuth, async (req, res) => {
       success: true,
       data: {
         settings: groupedSettings,
-        categories: ['points', 'quests', 'streak', 'social', 'system']
+        categories: ['points', 'quests', 'streak', 'social', 'system', 'job', 'reward']
       }
     });
   } catch (error) {
@@ -1021,19 +1022,34 @@ router.post('/partner-registrations/:id/approve', auth, adminAuth, async (req, r
       });
     }
 
-    // Generate partner code
+    // Generate partner code - ensure it's unique
     const generatePartnerCode = async () => {
       let code;
       let isUnique = false;
-      while (!isUnique) {
+      let attempts = 0;
+      const maxAttempts = 100;
+      
+      while (!isUnique && attempts < maxAttempts) {
         code = 'PT' + Math.floor(10000 + Math.random() * 90000).toString();
         const existing = await Partner.findOne({ partnerCode: code });
-        if (!existing) isUnique = true;
+        if (!existing) {
+          isUnique = true;
+          console.log(`✅ Generated unique partnerCode: ${code} (attempt ${attempts + 1})`);
+        } else {
+          attempts++;
+          console.log(`⚠️ PartnerCode ${code} already exists, trying again... (attempt ${attempts})`);
+        }
       }
+      
+      if (!isUnique) {
+        throw new Error('Failed to generate unique partnerCode after maximum attempts');
+      }
+      
       return code;
     };
 
     const partnerCode = await generatePartnerCode();
+    console.log(`🔍 Generated partnerCode for partner ${req.params.id}: ${partnerCode}`);
 
     // Update partner status to probation (ทดลองงาน)
     partner.status = 'probation';
@@ -1616,6 +1632,86 @@ router.post('/cash-rewards/:id/reject', auth, adminAuth, async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error rejecting cash reward:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * GET /api/v2/admin/rewards
+ * Get all rewards (admin only)
+ */
+router.get('/rewards', auth, adminAuth, async (req, res) => {
+  try {
+    const rewards = await Reward.find({}).sort({ order: 1, createdAt: -1 });
+    
+    res.json({
+      success: true,
+      data: rewards
+    });
+  } catch (error) {
+    console.error('❌ Error getting rewards:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * PUT /api/v2/admin/rewards/:rewardId
+ * Update reward (admin only) - mainly for active/deactive
+ */
+router.put('/rewards/:rewardId', auth, adminAuth, async (req, res) => {
+  try {
+    const { rewardId } = req.params;
+    const updateData = req.body;
+
+    const reward = await Reward.findOne({ rewardId });
+    if (!reward) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบรางวัล'
+      });
+    }
+
+    // Update reward
+    if (updateData.active !== undefined) {
+      reward.active = updateData.active;
+    }
+    if (updateData.name) {
+      reward.name = updateData.name;
+    }
+    if (updateData.description) {
+      reward.description = updateData.description;
+    }
+    if (updateData.pointsRequired !== undefined) {
+      reward.pointsRequired = updateData.pointsRequired;
+    }
+    if (updateData.streakRequired !== undefined) {
+      reward.streakRequired = updateData.streakRequired;
+    }
+    if (updateData.cashAmount !== undefined) {
+      reward.cashAmount = updateData.cashAmount;
+    }
+    if (updateData.order !== undefined) {
+      reward.order = updateData.order;
+    }
+    if (req.user?.id) {
+      reward.lastModifiedBy = req.user.id;
+    }
+
+    await reward.save();
+
+    res.json({
+      success: true,
+      message: 'อัปเดตรางวัลสำเร็จ',
+      data: reward
+    });
+  } catch (error) {
+    console.error('❌ Error updating reward:', error);
     res.status(500).json({
       success: false,
       message: error.message || 'เกิดข้อผิดพลาด'

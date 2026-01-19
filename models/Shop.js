@@ -75,6 +75,60 @@ const shopSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Shop mode: online, offline, or both
+  shopMode: {
+    type: String,
+    enum: ['online', 'offline', 'both'],
+    default: 'both'
+  },
+  // Shop open/close status
+  isOpen: {
+    type: Boolean,
+    default: true
+  },
+  // Delivery option: self (ส่งของด้วยตัวเอง), accept_delivery (รับคนส่งของ), both
+  deliveryOption: {
+    type: String,
+    enum: ['self', 'accept_delivery', 'both'],
+    default: 'both'
+  },
+  // Delivery radius in kilometers (ใช้เมื่อต้องการพนักงานส่งอาหาร)
+  // Default value will be set from QuestSettings in pre-save hook
+  deliveryRadiusKm: {
+    type: Number,
+    default: null,
+    min: 0
+  },
+  // Delivery price that shop is willing to pay (ต้องไม่ต่ำกว่าที่ admin กำหนด)
+  // Default value will be set from QuestSettings in pre-save hook
+  deliveryPrice: {
+    type: Number,
+    default: null,
+    min: 0
+  },
+  // Bank account information for withdrawal/deposit
+  bankAccount: {
+    accountName: {
+      type: String,
+      default: '',
+      trim: true
+    },
+    accountNumber: {
+      type: String,
+      default: '',
+      trim: true
+    },
+    bankName: {
+      type: String,
+      default: '',
+      trim: true
+    },
+    bankBranch: {
+      type: String,
+      default: '',
+      trim: true
+    }
+  },
   status: {
     type: String,
     enum: ['pending', 'active', 'rejected', 'suspended'],
@@ -155,5 +209,41 @@ shopSchema.statics.findActiveShops = function() {
 // ✅ ENSURE VIRTUAL FIELDS ARE INCLUDED IN JSON
 shopSchema.set('toJSON', { virtuals: true });
 shopSchema.set('toObject', { virtuals: true });
+
+// Pre-save hook: Set default delivery values from QuestSettings if not provided
+shopSchema.pre('save', async function(next) {
+  // Only set defaults if this is a new document or values are null/undefined
+  if (this.isNew || this.deliveryPrice === null || this.deliveryPrice === undefined || 
+      this.deliveryRadiusKm === null || this.deliveryRadiusKm === undefined) {
+    try {
+      const QuestSettings = require('./QuestSettings');
+      
+      // Set default delivery price if not provided
+      if (this.deliveryPrice === null || this.deliveryPrice === undefined) {
+        const defaultPrice = await QuestSettings.getSetting('delivery_min_price');
+        if (defaultPrice !== null && defaultPrice !== undefined) {
+          this.deliveryPrice = defaultPrice;
+          console.log(`✅ Set default deliveryPrice to ${defaultPrice} from QuestSettings`);
+        }
+      }
+      
+      // Set default delivery radius if not provided
+      if (this.deliveryRadiusKm === null || this.deliveryRadiusKm === undefined) {
+        const defaultRadius = await QuestSettings.getSetting('delivery_default_radius_km');
+        if (defaultRadius !== null && defaultRadius !== undefined) {
+          this.deliveryRadiusKm = defaultRadius;
+          console.log(`✅ Set default deliveryRadiusKm to ${defaultRadius} from QuestSettings`);
+        } else {
+          // Fallback to 10 if setting doesn't exist
+          this.deliveryRadiusKm = 10;
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error setting default delivery values from QuestSettings:', error);
+      // Continue with save even if settings can't be loaded
+    }
+  }
+  next();
+});
 
 module.exports = mongoose.model('Shop', shopSchema);

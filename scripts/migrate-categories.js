@@ -11,7 +11,7 @@ async function migrateCategories() {
     console.log('✅ Connected to MongoDB');
 
     console.log('\n📦 Starting categories migration...');
-    
+
     // Find all attractions
     const attractions = await TouristAttraction.find({});
     console.log(`Found ${attractions.length} attractions to migrate`);
@@ -58,7 +58,7 @@ async function migrateCategories() {
             }
           }
         );
-        
+
         updatedCount++;
         console.log(`  ✅ Updated: ${attraction.name} -> categories: [${categories.join(', ')}]`);
       } catch (error) {

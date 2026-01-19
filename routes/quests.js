@@ -3,10 +3,12 @@ const express = require('express');
 const router = express.Router();
 
 // REQUIRED IMPORTS - MAKE SURE THESE ARE AT THE TOP
+const mongoose = require('mongoose');
 const Quest = require('../models/Quest');
 const QuestTemplate = require('../models/QuestTemplate'); // ADD THIS LINE
 const Shop = require('../models/Shop'); // ADD THIS LINE
 const User = require('../models/User'); // ADD THIS LINE if needed
+const UserQuest = require('../models/UserQuest');
 const { auth } = require('../middleware/auth');
 const { provinceGroups, getRegionByProvince, getProvincesByRegion } = require('../data/thaiProvinces');
 
@@ -189,6 +191,8 @@ router.get('/active', async (req, res) => {
       currentParticipants: quest.currentParticipants || 0,
       maxParticipants: quest.maxParticipants || 10,
       category: quest.category || 'general',
+      type: quest.type,
+      shopId: quest.shopId,
       startDate: quest.startDate,
       endDate: quest.endDate,
       shop: quest.shop,
@@ -287,16 +291,59 @@ router.get('/shop/:shopId', async (req, res) => {
     const { shopId } = req.params;
     console.log('🏪 Fetching quests for shop:', shopId);
 
-    const quests = await Quest.find({
-      shopId: shopId,
+    // Query by both shopId (String) and shop (ObjectId) to find all quests
+    let shopObjectId = null;
+    
+    // Try to find shop by shopId to get ObjectId
+    try {
+      const shop = await Shop.findOne({ 
+        $or: [
+          { shopId: shopId },
+          { _id: shopId }
+        ]
+      }).select('_id');
+      if (shop) {
+        shopObjectId = shop._id;
+      }
+    } catch (shopError) {
+      console.log('⚠️ Could not find shop ObjectId, will query by shopId only');
+    }
+
+    // Check if shopId is a valid ObjectId
+    let isValidObjectId = false;
+    try {
+      if (mongoose.Types.ObjectId.isValid(shopId)) {
+        isValidObjectId = true;
+      }
+    } catch (e) {
+      isValidObjectId = false;
+    }
+
+    // Build query to match either shopId string or shop ObjectId
+    const query = {
       status: 'active',
       endDate: { $gte: new Date() }
-    })
+    };
+    
+    // Build $or conditions
+    const orConditions = [{ shopId: shopId }];
+    
+    // Only add shop ObjectId condition if we have a valid ObjectId
+    if (shopObjectId) {
+      orConditions.push({ shop: shopObjectId });
+    } else if (isValidObjectId) {
+      // Only try to use shopId as ObjectId if it's a valid ObjectId format
+      orConditions.push({ shop: new mongoose.Types.ObjectId(shopId) });
+    }
+    
+    query.$or = orConditions;
+
+    const quests = await Quest.find(query)
     .populate('shop', 'shopName province district')
     .sort({ createdAt: -1 })
     .lean();
     
-    console.log(`✅ Found ${quests.length} quests for shop ${shopId}`);
+    console.log(`✅ Found ${quests.length} quests for shop ${shopId} (ObjectId: ${shopObjectId})`);
     
     const transformedQuests = quests.map(quest => ({
       _id: quest._id,
@@ -306,6 +353,11 @@ router.get('/shop/:shopId', async (req, res) => {
       rewardAmount: quest.rewardAmount,
       rewardPoints: quest.rewardPoints,
       category: quest.category,
+      type: quest.type,
+      shopId: quest.shopId,
+      coordinates: quest.coordinates,
+      locationName: quest.locationName,
+      address: quest.address,
       difficulty: quest.difficulty,
       status: quest.status,
       startDate: quest.startDate,
@@ -739,7 +791,34 @@ router.post('/:questId/complete', auth, async (req, res) => {
       });
     }
 
+    // For check-in quests, check if user already completed today (once per day per shop)
+    if (quest.type === 'location_checkin' || quest.category === 'check-in') {
+      // Check if user completed this quest today
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      const todayCompletion = await UserQuest.findOne({
+        userId: userId,
+        questId: questId,
+        status: 'completed',
+        completedAt: {
+          $gte: today,
+          $lt: tomorrow
+        }
+      });
+
+      if (todayCompletion) {
+        return res.status(400).json({
+          success: false,
+          message: 'คุณทำเควสเช็คอินนี้แล้ววันนี้ (ทำได้วันละครั้ง)'
+        });
+      }
+    }
+
     if (userQuest.status === 'completed') {
+      // For non-check-in quests, still prevent duplicate completion
       return res.status(400).json({
         success: false,
         message: 'Quest already completed'
@@ -808,6 +887,42 @@ router.get('/users/:userId/quests', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Internal server error'
+    });
+  }
+});
+
+// Get quest by id (used by QuestDetails / ShopQuestDetail)
+// NOTE: Keep this route LAST to avoid shadowing other routes like /users/:userId/quests
+router.get('/:questId', async (req, res) => {
+  try {
+    const { questId } = req.params;
+
+    const quest = await Quest.findById(questId)
+      .populate('shop', 'shopName shopType province district address coordinates images phone description status shopId')
+      .lean();
+
+    if (!quest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Quest not found'
+      });
+    }
+
+    // Ensure radius exists for location_checkin quests (default 100m)
+    if (quest.type === 'location_checkin' && !quest.radius) {
+      quest.radius = 100;
+    }
+
+    return res.json({
+      success: true,
+      data: quest
+    });
+  } catch (error) {
+    console.error('❌ Error fetching quest by id:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error fetching quest',
+      error: error.message
     });
   }
 });

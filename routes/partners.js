@@ -104,16 +104,102 @@ router.get('/registration-status', auth, async (req, res) => {
   }
 });
 
-// Apply auth middleware to shop routes
+// Apply auth middleware to partner-protected routes
 router.use(auth);
+
+// Public-like info endpoint (still requires auth from app)
+router.get('/info/:partnerCode', partnerController.getPartnerInfoByCode);
 
 // Shop registration routes
 router.post('/shops/register', partnerController.registerShop);
+router.post('/shops/register-manual', partnerController.registerShopManual); // Manual registration for onsite
 router.get('/shops', partnerController.getPartnerShops);
 router.get('/shops/:shopId', partnerController.getShopDetails);
+router.put('/shops/:shopId/status', partnerController.updateShopStatus);
 router.post('/shops/generate-number', partnerController.generateShopNumber);
 
 // Partner dashboard statistics
 router.get('/dashboard', partnerController.getPartnerDashboard);
+
+// Update partner information
+router.put('/me', auth, async (req, res) => {
+  try {
+    const userId = req.user?._id || req.user?.id;
+    
+    if (!userId) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'User authentication required' 
+      });
+    }
+
+    // Find partner by userId
+    const partner = await Partner.findOne({ userId });
+    
+    if (!partner) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Partner not found' 
+      });
+    }
+
+    // Update partner information
+    if (req.body.personalInfo) {
+      partner.personalInfo = {
+        ...partner.personalInfo,
+        ...req.body.personalInfo,
+      };
+    }
+
+    if (req.body.workingArea) {
+      partner.workingArea = {
+        ...partner.workingArea,
+        ...req.body.workingArea,
+      };
+    }
+
+    if (req.body.socialMedia) {
+      partner.socialMedia = {
+        ...partner.socialMedia,
+        ...req.body.socialMedia,
+      };
+    }
+
+    if (req.body.bankAccount) {
+      partner.bankAccount = {
+        ...partner.bankAccount,
+        ...req.body.bankAccount,
+      };
+    }
+
+    if (req.body.additionalInfo) {
+      partner.additionalInfo = {
+        ...partner.additionalInfo,
+        ...req.body.additionalInfo,
+      };
+    }
+
+    await partner.save();
+
+    // Populate and return updated partner
+    const updatedPartner = await Partner.findById(partner._id)
+      .populate('userId', 'name email photo')
+      .lean();
+
+    console.log(`✅ Partner ${partner._id} updated by user ${userId}`);
+
+    res.json({
+      success: true,
+      message: 'Partner information updated successfully',
+      data: updatedPartner
+    });
+  } catch (error) {
+    console.error('❌ Error updating partner:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to update partner information' 
+    });
+  }
+});
 
 module.exports = router;

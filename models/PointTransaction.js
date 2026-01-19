@@ -9,15 +9,16 @@ const pointTransactionSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: ['claim', 'refund', 'adjustment', 'new_user', 'tourist_quest', 'admin_adjustment', 'streak_milestone'],
+    enum: ['claim', 'refund', 'adjustment', 'new_user', 'tourist_quest', 'admin_adjustment', 'streak_milestone', 'job_application_fee', 'job_commission_fee', 'reward'],
     index: true
   },
   
   // Amount of points
+  // Positive = user receives points (reward, refund, etc.)
+  // Negative = user pays points (fee, etc.)
   amount: {
     type: Number,
-    required: true,
-    min: 0
+    required: true
   },
   
   // User who claimed/received points (if applicable)

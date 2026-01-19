@@ -39,7 +39,7 @@ const touristAttractionSchema = new mongoose.Schema({
     required: true,
     default: ['other'],
     validate: {
-      validator: function(categories) {
+      validator: function (categories) {
         const validCategories = ['historical', 'temple', 'museum', 'zoo', 'market', 'park', 'beach', 'mountain', 'waterfall', 'office', 'restaurant', 'michelin', 'shopping', 'recommended', 'other'];
         return categories.every(cat => validCategories.includes(cat));
       },

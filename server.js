@@ -54,8 +54,13 @@ app.use((req, res, next) => {
 });
 
 // Body Parsers (CRITICAL for POST/PUT requests - MUST come before routes)
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Increase limit to 10MB to handle base64 image uploads
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Logging Middleware (for audit logs)
+const { requestLogger, errorLogger } = require('./middleware/loggingMiddleware');
+app.use(requestLogger);
 
 // ===========================================
 // 3. DATABASE CONNECTION
@@ -80,11 +85,81 @@ const authRoutes = require('./routes/auth');
 const debugRoutes = require('./routes/debug');
 const integrationsRoutes = require('./routes/integrations');
 const privacyRoutes = require('./routes/privacy');
+const { auth } = require('./middleware/auth');
 
 // ********** ADD NEW STREAK ROUTES *********
 app.use('/api/auth', authRoutes);
 app.use('/api/integrations', integrationsRoutes);
 app.use('/api/quests', questRoutes);
+
+// TikTok routes (mounted separately to support /api/tiktok/* paths)
+const tiktokRouter = express.Router();
+tiktokRouter.get('/challenges', auth, async (req, res) => {
+    try {
+        const { limit = 10, sort = 'trending', includeJoined = false } = req.query;
+        
+        // TODO: Implement actual TikTok challenges API integration
+        // For now, return mock/placeholder data
+        const challenges = [
+            {
+                _id: 'challenge1',
+                title: 'TikTok Hashtag Challenge',
+                description: 'สร้างวิดีโอด้วยแฮชแท็ก #ThaiQuestifyChallenge',
+                hashtag: 'ThaiQuestifyChallenge',
+                creator: {
+                    name: 'ทีมงานไทยเควส',
+                    avatarColor: '#EE1D52'
+                },
+                participants: 0,
+                completed: 0,
+                isJoined: includeJoined === 'true' ? false : undefined,
+                points: 100,
+                deadline: null
+            }
+        ];
+
+        return res.json({
+            success: true,
+            data: {
+                challenges: challenges.slice(0, parseInt(limit)),
+                count: challenges.length
+            }
+        });
+    } catch (error) {
+        console.error('❌ TikTok challenges error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to get TikTok challenges',
+            error: error.message
+        });
+    }
+});
+
+tiktokRouter.post('/challenges/:challengeId/join', auth, async (req, res) => {
+    try {
+        const { challengeId } = req.params;
+        
+        // TODO: Implement actual TikTok challenge join logic
+        // For now, return success response
+        return res.json({
+            success: true,
+            message: 'Joined TikTok challenge successfully',
+            data: {
+                challengeId,
+                joinedAt: new Date()
+            }
+        });
+    } catch (error) {
+        console.error('❌ TikTok challenge join error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to join TikTok challenge',
+            error: error.message
+        });
+    }
+});
+
+app.use('/api/tiktok', tiktokRouter);
 // ... (use for other routes) ...
 app.use('/api/debug', debugRoutes);
 
@@ -96,6 +171,22 @@ app.use('/api/user-generated-quests', userGeneratedQuestsRoutes);
 const socialQuestsRoutes = require('./routes/socialQuests');
 app.use('/api/social-quests', socialQuestsRoutes);
 
+// Orders Routes
+const ordersRoutes = require('./routes/orders');
+app.use('/api/orders', ordersRoutes);
+
+// Jobs Routes (ระบบจ้างงาน)
+const jobsRoutes = require('./routes/jobs');
+app.use('/api/jobs', jobsRoutes);
+
+// Deliveries Routes (ระบบส่งอาหาร)
+const deliveriesRoutes = require('./routes/deliveries');
+app.use('/api/deliveries', deliveriesRoutes);
+
+// Delivery Requests Routes (ระบบส่งอาหารให้ร้านค้า)
+const deliveryRequestsRoutes = require('./routes/deliveryRequests');
+app.use('/api/delivery-requests', deliveryRequestsRoutes);
+
 // Dashboard Routes
 const dashboardRoutes = require('./routes/dashboard');
 app.use('/api', dashboardRoutes);
@@ -104,17 +195,44 @@ app.use('/api', dashboardRoutes);
 const adminRoutes = require('./routes/admin');
 app.use('/api/v2/admin', adminRoutes);
 
+// Activity Logs Routes
+const activityLogsRoutes = require('./routes/activityLogs');
+app.use('/api/v2/activity-logs', activityLogsRoutes);
+
+// Users Routes (must be defined before /api/v2/users)
+const usersRoutes = require('./routes/users');
+app.use('/api/users', usersRoutes);
+
+// Users V2 Routes (for v2 API endpoints)
+app.use('/api/v2/users', usersRoutes);
+
 // Rewards Routes
 const rewardsRoutes = require('./routes/rewards');
 app.use('/api/v2/rewards', rewardsRoutes);
+
+// Wallet Routes
+const walletRoutes = require('./routes/wallet');
+app.use('/api/v2/wallet', walletRoutes);
+
+// Notifications Routes
+const notificationsRoutes = require('./routes/notifications');
+app.use('/api/v2/notifications', notificationsRoutes);
 
 // Partner Routes
 const partnersRoutes = require('./routes/partners');
 app.use('/api/partners', partnersRoutes);
 
+// Rider Routes
+const riderRoutes = require('./routes/riders');
+app.use('/api/rider', riderRoutes);
+
 // Shop Request Routes
 const shopRequestsRoutes = require('./routes/shopRequests');
 app.use('/api/shop-requests', shopRequestsRoutes);
+
+// Shop Routes
+const shopRoutes = require('./routes/shops');
+app.use('/api/shop', shopRoutes);
 
 // Tourist Attractions Routes
 const touristAttractionsRoutes = require('./routes/touristAttractions');
@@ -1033,6 +1151,8 @@ app.use((err, req, res, next) => {
   });
 });
 
+// Error logging middleware (must be before error handler)
+app.use(errorLogger);
 
 // ===========================================
 // 8. START SERVER

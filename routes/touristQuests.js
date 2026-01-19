@@ -19,7 +19,7 @@ const TouristAttraction = require('../models/TouristAttraction');
 router.get('/attraction/:attractionId/quest', auth, async (req, res) => {
   try {
     const { attractionId } = req.params;
-    
+
     // Get attraction data from database
     const attraction = await TouristAttraction.findOne({ id: attractionId, isActive: true });
     if (!attraction) {
@@ -293,7 +293,7 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
     const hashtagToCheck = hashtag || defaultHashtag || '#ThaiQuestify';
     // Also check for #ThaiQuestify as a fallback
     const alternativeHashtags = ['#thaiquestify', '#ThaiQuestify', defaultHashtag.toLowerCase()].filter(h => h && h !== hashtagToCheck.toLowerCase());
-    
+
     try {
       // Try to get token info to check permissions
       let tokenInfo = null;
@@ -313,7 +313,7 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
       } catch (tokenError) {
         console.warn('⚠️ [DEBUG] Could not verify token:', tokenError.message);
       }
-      
+
       console.log('🔍 [DEBUG] Starting Facebook post verification:', {
         userId: req.user.id,
         facebookUserId: facebook.userId,
@@ -324,13 +324,13 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
         tokenScopes: tokenInfo?.scopes || tokenInfo?.granted_scopes || 'Unknown',
         hasUserPostsScope: (tokenInfo?.scopes || tokenInfo?.granted_scopes || []).includes('user_posts')
       });
-      
+
       // Try multiple endpoints to get posts
       // Use user ID instead of 'me' to avoid Pages Experience issue
       let userPosts = [];
       let apiError = null;
       const userId = facebook.userId || accountId;
-      
+
       try {
         console.log('🔍 [DEBUG] Attempting to fetch from {user-id}/posts endpoint...');
         console.log('🔍 [DEBUG] Using user ID:', userId);
@@ -350,7 +350,7 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
           fullResponse: JSON.stringify(responseData, null, 2) // Full response for debugging
         });
         userPosts = responseData.data || [];
-        
+
         // Check if response has error
         if (responseData.error) {
           console.error('⚠️ [DEBUG] Facebook API returned error in response:', {
@@ -362,7 +362,7 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
             fbtrace_id: responseData.error.fbtrace_id
           });
         }
-        
+
         // If no posts and no error, this might be a permission issue
         if (userPosts.length === 0 && !responseData.error) {
           console.warn('⚠️ [DEBUG] No posts returned but no error. Possible reasons:');
@@ -378,7 +378,7 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
           errorData: postsError.response?.data
         });
         apiError = postsError;
-        
+
         // Try alternative: me/feed endpoint
         try {
           console.log('🔍 [DEBUG] Trying me/feed endpoint as fallback...');
@@ -395,13 +395,13 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
           // Check if error is about Pages Experience
           const errorSubcode = feedError.response?.data?.error?.error_subcode;
           const errorMsg = feedError.response?.data?.error?.error_user_msg || '';
-          
+
           if (errorSubcode === 2069030 || errorMsg.includes('New Pages Experience')) {
             console.error('❌ [DEBUG] ERROR: Account is using New Pages Experience which is not supported');
             console.error('   Solution: User must use a Personal Facebook account, not a Page');
             console.error('   Or: Connect as Page admin and use Page API endpoints');
           }
-          
+
           console.error('❌ [DEBUG] {user-id}/feed endpoint also failed:', {
             message: feedError.message,
             status: feedError.response?.status,
@@ -409,7 +409,7 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
           });
         }
       }
-      
+
       console.log('🔍 [DEBUG] Posts retrieved:', {
         totalPosts: userPosts.length,
         firstFewPosts: userPosts.slice(0, 3).map(p => ({
@@ -438,28 +438,28 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
         const postMessage = post.message?.toLowerCase() || '';
         const postCreatedTime = new Date(post.created_time);
         const isInTimeRange = postCreatedTime >= timeLimit;
-        
+
         // Check if post has primary hashtag
         const hasPrimaryHashtag = postMessage.includes(lowerCaseHashtag);
-        
+
         // Check if post has any alternative hashtag
         const hasAlternativeHashtag = lowerCaseAlternativeHashtags.some(altHashtag => postMessage.includes(altHashtag));
         const foundAltHashtags = lowerCaseAlternativeHashtags.filter(altHashtag => postMessage.includes(altHashtag));
         const hasHashtag = hasPrimaryHashtag || hasAlternativeHashtag;
-        
+
         // Check if post has check-in location (place)
         // Also check if place name matches attraction name (optional, for better accuracy)
         const hasPlace = !!post.place;
         const placeName = post.place?.name?.toLowerCase() || '';
         const attractionNameLower = attraction.name.toLowerCase();
         const placeMatches = placeName.includes(attractionNameLower) || attractionNameLower.includes(placeName);
-        
+
         // Match if:
         // 1. Has hashtag in message (primary or alternative), OR
         // 2. Has check-in location (place), OR  
         // 3. Has check-in location with matching place name
         const matches = (hasHashtag || hasPlace || placeMatches) && isInTimeRange;
-        
+
         if (matches) {
           console.log('✅ [DEBUG] Matching post found:', {
             postId: post.id,
@@ -474,7 +474,7 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
             isInTimeRange
           });
         }
-        
+
         return matches;
       });
 
@@ -489,8 +489,8 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
             const postMsg = p.message?.toLowerCase() || '';
             const hasHashtag = postMsg.includes(hashtagToCheck.toLowerCase());
             const placeName = p.place?.name?.toLowerCase() || '';
-            const placeMatches = placeName.includes(attraction.name.toLowerCase()) || 
-                                attraction.name.toLowerCase().includes(placeName);
+            const placeMatches = placeName.includes(attraction.name.toLowerCase()) ||
+              attraction.name.toLowerCase().includes(placeName);
             return {
               id: p.id,
               hasMessage: !!p.message,
@@ -513,17 +513,17 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
             errorType: apiError.response?.data?.error?.type
           } : null
         });
-        
+
         // Check if missing user_posts permission
         const missingPermission = !(tokenInfo?.scopes || tokenInfo?.granted_scopes || []).includes('user_posts');
-        
+
         // Check for Pages Experience error
         const isPagesExperienceError = apiError?.response?.data?.error?.error_subcode === 2069030 ||
-                                      apiError?.response?.data?.error?.error_user_msg?.includes('New Pages Experience') ||
-                                      apiError?.response?.data?.error?.error_user_title?.includes('New Pages Experience');
-        
+          apiError?.response?.data?.error?.error_user_msg?.includes('New Pages Experience') ||
+          apiError?.response?.data?.error?.error_user_title?.includes('New Pages Experience');
+
         let errorMessage = `ไม่พบโพสต์บน Facebook ที่มี hashtag ${hashtagToCheck} หรือ check-in location ใน 7 วันที่ผ่านมา\n\n`;
-        
+
         if (isPagesExperienceError) {
           errorMessage += `❌ ปัญหา: Facebook account ใช้ "New Pages Experience" ซึ่งไม่รองรับ\n\n`;
           errorMessage += `Facebook API ไม่รองรับการดึงโพสต์จาก New Pages Experience\n\n`;
@@ -549,7 +549,7 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
           errorMessage += `3. ตรวจสอบว่าโพสต์เป็น Public\n`;
           errorMessage += `4. รอสักครู่แล้วลองอีกครั้ง (Facebook API อาจมี delay)`;
         }
-        
+
         return res.status(400).json({
           success: false,
           verified: false,
@@ -641,7 +641,7 @@ router.post('/attraction/:attractionId/verify', auth, async (req, res) => {
         req.user.id,
         locationCheck.distance
       );
-      
+
       if (updateResult.updated) {
         console.log(`✅ Auto-updated coordinates for ${attraction.name} based on check-ins`);
       }

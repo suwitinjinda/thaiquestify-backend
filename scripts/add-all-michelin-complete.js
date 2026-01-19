@@ -19,7 +19,7 @@ const generateBangkokRestaurants = () => {
     'Aunglo by Yangrak', 'Charmgang', 'Prik-Yuak', 'Plaew', 'Here Hai',
     'Nhong Rim Klong', 'Hia Wan Khao Tom Pla', 'Lay Lao', 'Rung Rueang Pork Noodles'
   ];
-  
+
   // Add more Bangkok Bib Gourmand (68 total)
   for (let i = 0; i < 50; i++) {
     restaurants.push({
@@ -37,7 +37,7 @@ const generateBangkokRestaurants = () => {
       michelinRating: 'Bib Gourmand'
     });
   }
-  
+
   // Add Bangkok Michelin Selected (216 total, many in Bangkok)
   for (let i = 0; i < 100; i++) {
     restaurants.push({
@@ -55,14 +55,14 @@ const generateBangkokRestaurants = () => {
       michelinRating: 'Michelin Selected'
     });
   }
-  
+
   return restaurants;
 };
 
 // Generate restaurants for other provinces
 const generateOtherProvincesRestaurants = () => {
   const restaurants = [];
-  
+
   // Ayutthaya - 15 Bib Gourmand (add 11 more)
   for (let i = 0; i < 11; i++) {
     restaurants.push({
@@ -80,7 +80,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Bib Gourmand'
     });
   }
-  
+
   // Chiang Mai - 27 Bib Gourmand (add 10 more)
   for (let i = 0; i < 10; i++) {
     restaurants.push({
@@ -98,7 +98,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Bib Gourmand'
     });
   }
-  
+
   // Phuket - 25 Bib Gourmand (add 2 more) + Michelin Selected
   for (let i = 0; i < 2; i++) {
     restaurants.push({
@@ -116,7 +116,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Bib Gourmand'
     });
   }
-  
+
   // Phang Nga - 11 Bib Gourmand (add 1 more)
   restaurants.push({
     id: 'michelin-phangnga-12',
@@ -132,7 +132,7 @@ const generateOtherProvincesRestaurants = () => {
     checkInRadius: 50,
     michelinRating: 'Bib Gourmand'
   });
-  
+
   // Khon Kaen - 13 Bib Gourmand (add 9 more)
   for (let i = 0; i < 9; i++) {
     restaurants.push({
@@ -150,7 +150,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Bib Gourmand'
     });
   }
-  
+
   // Nakhon Ratchasima - 10 Bib Gourmand (add 7 more)
   for (let i = 0; i < 7; i++) {
     restaurants.push({
@@ -168,7 +168,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Bib Gourmand'
     });
   }
-  
+
   // Ubon Ratchathani - 6 Bib Gourmand (add 5 more)
   for (let i = 0; i < 5; i++) {
     restaurants.push({
@@ -186,7 +186,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Bib Gourmand'
     });
   }
-  
+
   // Udon Thani - 9 Bib Gourmand (add 6 more)
   for (let i = 0; i < 6; i++) {
     restaurants.push({
@@ -204,7 +204,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Bib Gourmand'
     });
   }
-  
+
   // Surat Thani - Add more Michelin Selected
   for (let i = 0; i < 7; i++) {
     restaurants.push({
@@ -222,7 +222,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Michelin Selected'
     });
   }
-  
+
   // Add more Michelin Selected to reach 216 total (currently ~113, need ~103 more)
   // Bangkok - More Michelin Selected
   for (let i = 0; i < 61; i++) {
@@ -241,7 +241,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Michelin Selected'
     });
   }
-  
+
   // Add more Bib Gourmand to reach 196 total
   for (let i = 0; i < 3; i++) {
     restaurants.push({
@@ -259,7 +259,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Bib Gourmand'
     });
   }
-  
+
   // Add Michelin Selected for other provinces
   // Phuket - More Michelin Selected
   for (let i = 0; i < 15; i++) {
@@ -278,7 +278,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Michelin Selected'
     });
   }
-  
+
   // Chiang Mai - More Michelin Selected
   for (let i = 0; i < 10; i++) {
     restaurants.push({
@@ -296,7 +296,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Michelin Selected'
     });
   }
-  
+
   // Ayutthaya - More Michelin Selected
   for (let i = 0; i < 8; i++) {
     restaurants.push({
@@ -314,7 +314,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Michelin Selected'
     });
   }
-  
+
   // Surat Thani - More Michelin Selected
   for (let i = 0; i < 5; i++) {
     restaurants.push({
@@ -332,7 +332,7 @@ const generateOtherProvincesRestaurants = () => {
       michelinRating: 'Michelin Selected'
     });
   }
-  
+
   return restaurants;
 };
 

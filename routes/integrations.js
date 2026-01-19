@@ -48,14 +48,14 @@ router.get('/tiktok/status', auth, async (req, res) => {
         // Fetch stats if scope includes user.info.stats
         let stats = null;
         const hasStatsScope = tiktok?.scope?.includes('user.info.stats');
-        
+
         if (connected && hasStatsScope && tiktok?.accessToken) {
             try {
                 const statsResp = await axios.get(
                     'https://open.tiktokapis.com/v2/user/info/?fields=follower_count,following_count,likes_count,video_count',
                     { headers: { Authorization: `Bearer ${tiktok.accessToken}` } }
                 );
-                
+
                 const statsData = statsResp.data?.data?.user || {};
                 stats = {
                     followerCount: statsData.follower_count || 0,
@@ -64,7 +64,7 @@ router.get('/tiktok/status', auth, async (req, res) => {
                     videoCount: statsData.video_count || 0,
                     updatedAt: new Date(),
                 };
-                
+
                 // Save stats to database for tracking
                 if (user) {
                     user.integrations.tiktok.lastStatsUpdate = new Date();
@@ -211,7 +211,7 @@ router.get('/tiktok/stats', auth, async (req, res) => {
 // GET /api/integrations/tiktok/videos - Get user videos
 router.get('/tiktok/videos', auth, async (req, res) => {
     let tiktok; // Declare outside try block for error handler access
-    
+
     try {
         const user = await User.findById(req.user.id).select('integrations');
         tiktok = user?.integrations?.tiktok;
@@ -239,13 +239,13 @@ router.get('/tiktok/videos', auth, async (req, res) => {
         }
 
         const maxCount = Math.min(parseInt(req.query.max_count) || 10, 20); // TikTok API limit is 20
-        
+
         // Use TikTok API v2 only (v1 is deprecated)
         // According to TikTok API v2 documentation
         // fields should be a comma-separated string in query parameters
         // Note: embed_url and video_status are invalid fields, removed
         const fieldsString = 'id,title,cover_image_url,duration,view_count,like_count,comment_count,share_count,create_time';
-        
+
         const videosResp = await axios.post(
             'https://open.tiktokapis.com/v2/video/list/',
             {
@@ -262,7 +262,7 @@ router.get('/tiktok/videos', auth, async (req, res) => {
                 }
             }
         );
-        
+
         // TikTok API v2 response structure
         const videos = videosResp.data?.data?.videos || [];
         console.log('✅ TikTok API v2: got', videos.length, 'videos');
@@ -289,10 +289,10 @@ router.get('/tiktok/videos', auth, async (req, res) => {
         });
     } catch (error) {
         console.error('❌ TikTok videos error:', error);
-        
+
         const errorData = error?.response?.data || {};
         const errorStatus = error?.response?.status;
-        
+
         // Log detailed error information
         if (errorData.error) {
             console.error('📋 TikTok API Error Details:', {
@@ -302,12 +302,12 @@ router.get('/tiktok/videos', auth, async (req, res) => {
                 description: errorData.error?.description
             });
         }
-        
+
         // Handle 403 - Permission denied or deprecated API
         if (errorStatus === 403) {
             console.error('⚠️ TikTok API returned 403 Forbidden');
             console.error('Full error response:', JSON.stringify(errorData, null, 2));
-            
+
             // Try to get tiktok info if available
             let scopeInfo = null;
             let hasVideoScope = false;
@@ -319,10 +319,10 @@ router.get('/tiktok/videos', auth, async (req, res) => {
             } catch (e) {
                 // Ignore if we can't access tiktok
             }
-            
+
             const errorMsg = errorData.error?.message || errorData.error?.error_msg || errorData.error?.description || 'Access denied';
             const errorCode = errorData.error?.code || errorData.error?.error_code;
-            
+
             return res.status(403).json({
                 success: false,
                 message: `TikTok API access denied: ${errorMsg}`,
@@ -331,17 +331,17 @@ router.get('/tiktok/videos', auth, async (req, res) => {
                 error_msg: errorMsg,
                 scope_granted: scopeInfo,
                 has_video_list_scope: hasVideoScope,
-                suggestion: errorCode === 6007137 
+                suggestion: errorCode === 6007137
                     ? 'TikTok API v1 is deprecated. This endpoint now uses v2 only.'
                     : 'The user may need to reconnect their TikTok account to grant the video.list permission, or the app may need additional permissions in TikTok Developer Portal'
             });
         }
-        
+
         // Handle 404 - Endpoint not found
         if (errorStatus === 404) {
             console.error('⚠️ TikTok video.list API endpoint returned 404');
             console.error('Response:', errorData);
-            
+
             return res.status(404).json({
                 success: false,
                 message: 'TikTok video.list endpoint not available. The API endpoint may have changed or the scope may not have permission.',
@@ -349,7 +349,7 @@ router.get('/tiktok/videos', auth, async (req, res) => {
                 suggestion: 'Please check TikTok API documentation for the correct video.list endpoint'
             });
         }
-        
+
         return res.status(errorStatus || 500).json({
             success: false,
             message: 'Failed to get TikTok videos',
@@ -380,6 +380,73 @@ router.post('/tiktok/disconnect', auth, async (req, res) => {
     } catch (error) {
         console.error('❌ TikTok disconnect error:', error);
         return res.status(500).json({ success: false, message: 'Failed to disconnect TikTok' });
+    }
+});
+
+// GET /api/integrations/tiktok/challenges - Get TikTok challenges (also accessible at /api/tiktok/challenges)
+router.get('/tiktok/challenges', auth, async (req, res) => {
+    try {
+        const { limit = 10, sort = 'trending', includeJoined = false } = req.query;
+        
+        // TODO: Implement actual TikTok challenges API integration
+        // For now, return mock/placeholder data
+        const challenges = [
+            {
+                _id: 'challenge1',
+                title: 'TikTok Hashtag Challenge',
+                description: 'สร้างวิดีโอด้วยแฮชแท็ก #ThaiQuestifyChallenge',
+                hashtag: 'ThaiQuestifyChallenge',
+                creator: {
+                    name: 'ทีมงานไทยเควส',
+                    avatarColor: '#EE1D52'
+                },
+                participants: 0,
+                completed: 0,
+                isJoined: includeJoined === 'true' ? false : undefined,
+                points: 100,
+                deadline: null
+            }
+        ];
+
+        return res.json({
+            success: true,
+            data: {
+                challenges: challenges.slice(0, parseInt(limit)),
+                count: challenges.length
+            }
+        });
+    } catch (error) {
+        console.error('❌ TikTok challenges error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to get TikTok challenges',
+            error: error.message
+        });
+    }
+});
+
+// POST /api/integrations/tiktok/challenges/:challengeId/join - Join a TikTok challenge (also accessible at /api/tiktok/challenges/:challengeId/join)
+router.post('/tiktok/challenges/:challengeId/join', auth, async (req, res) => {
+    try {
+        const { challengeId } = req.params;
+        
+        // TODO: Implement actual TikTok challenge join logic
+        // For now, return success response
+        return res.json({
+            success: true,
+            message: 'Joined TikTok challenge successfully',
+            data: {
+                challengeId,
+                joinedAt: new Date()
+            }
+        });
+    } catch (error) {
+        console.error('❌ TikTok challenge join error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Failed to join TikTok challenge',
+            error: error.message
+        });
     }
 });
 
@@ -445,11 +512,11 @@ router.post('/facebook/start', auth, async (req, res) => {
             { expiresIn: '10m' }
         );
 
-            // Request permissions for basic profile info and user posts
-            // Note: user_posts requires App Review from Facebook for production use
-            // For testing, we include it but it may not work until App Review is approved
-            const scope = 'public_profile,email,user_posts'; // Added user_posts for testing
-        
+        // Request permissions for basic profile info and user posts
+        // Note: user_posts requires App Review from Facebook for production use
+        // For testing, we include it but it may not work until App Review is approved
+        const scope = 'public_profile,email,user_posts'; // Added user_posts for testing
+
         // Remove auth_type=reauthenticate to avoid password prompt and errors
         // This allows users to connect without re-entering password
         // Users can still select account if multiple accounts are logged in
@@ -650,7 +717,7 @@ router.post('/facebook/verify-engagement', auth, async (req, res) => {
                 } else if (targetLocation && radius) {
                     // Verify location distance if target location is provided
                     const locationVerificationService = require('../service/locationVerificationService');
-                    
+
                     const postCoords = {
                         latitude: parseFloat(postLocation.latitude),
                         longitude: parseFloat(postLocation.longitude),
@@ -736,7 +803,7 @@ router.post('/facebook/verify-engagement', auth, async (req, res) => {
 
                 const userPosts = postsResp.data?.data || [];
                 // Check if any post shares the target post
-                const sharedPost = userPosts.find(post => 
+                const sharedPost = userPosts.find(post =>
                     post.link && post.link.includes(postId)
                 );
 
@@ -797,14 +864,14 @@ router.post('/facebook/verify-engagement', auth, async (req, res) => {
 
                 const userPosts = postsResp.data?.data || [];
                 const hashtagLower = hashtag.toLowerCase().replace('#', '').trim();
-                
+
                 // Find posts with hashtag
                 const matchingPosts = userPosts.filter(post => {
                     const message = (post.message || '').toLowerCase();
                     // Check for hashtag (with # or without)
-                    const hasHashtag = message.includes(`#${hashtagLower}`) || 
-                                      message.split(/\s+/).some(word => word === `#${hashtagLower}` || word === hashtagLower);
-                    
+                    const hasHashtag = message.includes(`#${hashtagLower}`) ||
+                        message.split(/\s+/).some(word => word === `#${hashtagLower}` || word === hashtagLower);
+
                     // Check time range if specified (in hours)
                     if (hasHashtag && timeRange) {
                         const postTime = new Date(post.created_time);
@@ -812,7 +879,7 @@ router.post('/facebook/verify-engagement', auth, async (req, res) => {
                         const hoursAgo = (now - postTime) / (1000 * 60 * 60);
                         return hoursAgo <= timeRange;
                     }
-                    
+
                     return hasHashtag;
                 });
 
@@ -870,18 +937,18 @@ router.post('/facebook/verify-engagement', auth, async (req, res) => {
                 );
 
                 const userPosts = postsResp.data?.data || [];
-                
+
                 // Check if user has posts mentioning the page (by username or page name)
                 const pageName = pageInfo?.name?.toLowerCase() || targetPage.toLowerCase();
                 const pageUsernameLower = pageInfo?.username?.toLowerCase() || targetPage.toLowerCase();
-                
+
                 const matchingPosts = userPosts.filter(post => {
                     const message = (post.message || '').toLowerCase();
                     // Check if post mentions page name, username, or page URL
-                    return message.includes(pageName) || 
-                           message.includes(pageUsernameLower) ||
-                           message.includes(`@${pageUsernameLower}`) ||
-                           message.includes('facebook.com/' + pageUsernameLower);
+                    return message.includes(pageName) ||
+                        message.includes(pageUsernameLower) ||
+                        message.includes(`@${pageUsernameLower}`) ||
+                        message.includes('facebook.com/' + pageUsernameLower);
                 });
 
                 const latestMatchingPost = matchingPosts.length > 0 ? matchingPosts[0] : null;
@@ -912,7 +979,7 @@ router.post('/facebook/verify-engagement', auth, async (req, res) => {
             });
         } catch (apiError) {
             console.error('❌ Facebook API error:', apiError?.response?.data || apiError);
-            
+
             const errorData = apiError?.response?.data?.error || {};
             const errorCode = errorData.code;
             const errorMessage = errorData.message || apiError.message;
@@ -949,7 +1016,7 @@ router.get('/facebook/test-posts', async (req, res) => {
     try {
         // Support both authenticated (JWT) and query parameter (for testing)
         let userId = null;
-        
+
         // Try to get user from auth token first
         const authHeader = req.headers.authorization;
         if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -964,15 +1031,15 @@ router.get('/facebook/test-posts', async (req, res) => {
                 console.log('⚠️ [TEST] JWT token invalid, trying query parameter method');
             }
         }
-        
+
         // Fallback: get user ID from query parameter (for testing without auth)
         if (!userId && req.query.userId) {
             userId = req.query.userId;
         }
-        
+
         // Also support Facebook User ID for direct testing
         const facebookUserIdParam = req.query.facebookUserId;
-        
+
         if (!userId && !facebookUserIdParam) {
             return res.status(401).json({
                 success: false,
@@ -984,15 +1051,15 @@ router.get('/facebook/test-posts', async (req, res) => {
                 }
             });
         }
-        
+
         let user = null;
-        
+
         // If Facebook User ID provided, find user by Facebook integration
         if (facebookUserIdParam) {
             user = await User.findOne({
                 'integrations.facebook.userId': facebookUserIdParam
             }).select('integrations');
-            
+
             if (!user) {
                 return res.status(404).json({
                     success: false,
@@ -1010,7 +1077,7 @@ router.get('/facebook/test-posts', async (req, res) => {
                     'integrations.facebook.userId': userId
                 }).select('integrations');
             }
-            
+
             if (!user) {
                 return res.status(404).json({
                     success: false,
@@ -1019,7 +1086,7 @@ router.get('/facebook/test-posts', async (req, res) => {
                 });
             }
         }
-        
+
         const facebook = user?.integrations?.facebook;
 
         if (!facebook?.connectedAt || !facebook?.accessToken) {
@@ -1060,7 +1127,7 @@ router.get('/facebook/test-posts', async (req, res) => {
         // Step 2: Try to fetch user posts
         let posts = [];
         let postsError = null;
-        
+
         try {
             // Try {user-id}/posts endpoint first
             const postsResp = await axios.get(
@@ -1078,7 +1145,7 @@ router.get('/facebook/test-posts', async (req, res) => {
             console.log('   Total posts:', posts.length);
         } catch (postsError1) {
             console.error('❌ [TEST] Error with {user-id}/posts:', postsError1?.response?.data || postsError1?.message);
-            
+
             // Try me/posts as fallback
             try {
                 const mePostsResp = await axios.get(
@@ -1103,7 +1170,7 @@ router.get('/facebook/test-posts', async (req, res) => {
         // Step 3: Try to fetch feed as alternative
         let feed = [];
         let feedError = null;
-        
+
         try {
             const feedResp = await axios.get(
                 `https://graph.facebook.com/v18.0/${facebookUserId}/feed`,
@@ -1162,9 +1229,9 @@ router.get('/facebook/test-posts', async (req, res) => {
                 canUsePosts: hasUserPostsScope && posts.length > 0,
                 canUseFeed: hasUserPostsScope && feed.length > 0,
                 needsAppReview: !hasUserPostsScope,
-                message: hasUserPostsScope 
-                    ? (posts.length > 0 || feed.length > 0 
-                        ? '✅ user_posts permission is working!' 
+                message: hasUserPostsScope
+                    ? (posts.length > 0 || feed.length > 0
+                        ? '✅ user_posts permission is working!'
                         : '⚠️ Permission granted but no posts found. User may not have any posts.')
                     : '❌ user_posts permission not granted. May need to reconnect Facebook or request App Review.',
             }

@@ -2,6 +2,11 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
+const QuestSettings = require('../models/QuestSettings');
+const PointTransaction = require('../models/PointTransaction');
+const ActivityLog = require('../models/ActivityLog');
+const logger = require('../utils/logger');
+const { logLogin, logFailedLogin } = require('../utils/auditLogger');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const axios = require('axios');
@@ -45,12 +50,7 @@ router.post('/google', async (req, res) => {
         user.name = name;
       }
 
-      // Give welcome bonus to existing users who don't have points yet
-      if (user.points === undefined || user.points === null || user.points === 0) {
-        user.points = 1000;
-        console.log('🎁 Giving welcome bonus of 1000 points to existing user');
-      }
-
+      // Points are no longer given automatically - users must claim welcome reward
       await user.save();
     } else {
       console.log('🆕 Creating new Google user:', email);
@@ -71,6 +71,18 @@ router.post('/google', async (req, res) => {
       await user.save();
     }
 
+    // Log login activity
+    try {
+      await logLogin(req, user, 'google');
+      logger.activity('user_login', {
+        userId: user._id,
+        category: 'auth',
+        metadata: { method: 'google', email: user.email }
+      });
+    } catch (logError) {
+      console.error('Failed to log login activity:', logError.message);
+    }
+
     // Generate JWT token
     const token = jwt.sign(
       {
@@ -79,7 +91,7 @@ router.post('/google', async (req, res) => {
         userType: user.userType
       },
       process.env.JWT_SECRET || 'fallback-secret',
-      { expiresIn: '7d' }
+      { expiresIn: '24h' }
     );
 
     console.log('✅ Generated token for:', user.email, 'Role:', user.userType);
@@ -247,8 +259,8 @@ router.post('/google/exchange', async (req, res) => {
       // If user has Facebook integration but accountType is invalid, set to null
       if (user.integrations?.facebook) {
         const accountType = user.integrations.facebook.accountType;
-        if (accountType !== null && accountType !== undefined && 
-            !['user', 'page', 'unknown'].includes(accountType)) {
+        if (accountType !== null && accountType !== undefined &&
+          !['user', 'page', 'unknown'].includes(accountType)) {
           // If invalid value, set to null
           user.integrations.facebook.accountType = null;
         }
@@ -260,6 +272,18 @@ router.post('/google/exchange', async (req, res) => {
       console.log('✅ User updated successfully');
     }
 
+    // Log login activity
+    try {
+      await logLogin(req, user, 'google_exchange');
+      logger.activity('user_login', {
+        userId: user._id,
+        category: 'auth',
+        metadata: { method: 'google_exchange', email: user.email }
+      });
+    } catch (logError) {
+      console.error('Failed to log login activity:', logError.message);
+    }
+
     // 4. 🔥 สร้าง JWT Token
     const token = jwt.sign(
       {
@@ -269,7 +293,7 @@ router.post('/google/exchange', async (req, res) => {
         googleId: user.googleId
       },
       process.env.JWT_SECRET || 'fallback-secret',
-      { expiresIn: '7d' }
+      { expiresIn: '24h' }
     );
 
     // 5. 🔥 ส่งข้อมูล User ที่ครบถ้วนกลับไป
@@ -455,7 +479,7 @@ router.post('/google/direct', async (req, res) => {
         userType: user.userType
       },
       process.env.JWT_SECRET || 'dev-secret',
-      { expiresIn: '7d' }
+      { expiresIn: '24h' }
     );
 
     res.json({
@@ -602,6 +626,18 @@ router.post('/login', async (req, res) => {
     const user = await User.findOne({ email: email.toLowerCase() });
 
     if (!user) {
+      // Log failed login attempt
+      try {
+        await logFailedLogin(req, email, 'user_not_found', 'password');
+        logger.security('login_attempt_failed', {
+          email: email,
+          reason: 'user_not_found',
+          ipAddress: req.ip
+        });
+      } catch (logError) {
+        console.error('Failed to log failed login:', logError.message);
+      }
+
       return res.status(401).json({
         success: false,
         message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง'
@@ -615,6 +651,19 @@ router.post('/login', async (req, res) => {
       const isMatch = await bcrypt.compare(password, user.password);
 
       if (!isMatch) {
+        // Log failed login attempt
+        try {
+          await logFailedLogin(req, email, 'invalid_password', 'password');
+          logger.security('login_attempt_failed', {
+            userId: user._id,
+            email: email,
+            reason: 'invalid_password',
+            ipAddress: req.ip
+          });
+        } catch (logError) {
+          console.error('Failed to log failed login:', logError.message);
+        }
+
         return res.status(401).json({
           success: false,
           message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง'
@@ -632,6 +681,18 @@ router.post('/login', async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
+    // Log login activity
+    try {
+      await logLogin(req, user, 'password');
+      logger.activity('user_login', {
+        userId: user._id,
+        category: 'auth',
+        metadata: { method: 'password', email: user.email }
+      });
+    } catch (logError) {
+      console.error('Failed to log login activity:', logError.message);
+    }
+
     // Generate token
     const token = jwt.sign(
       {
@@ -640,7 +701,7 @@ router.post('/login', async (req, res) => {
         userType: user.userType
       },
       process.env.JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '24h' }
     );
 
     res.json({
@@ -722,7 +783,7 @@ router.post('/register', async (req, res) => {
         userType: user.userType
       },
       process.env.JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '24h' }
     );
 
     console.log('✅ New user registered:', user.email);
@@ -850,13 +911,8 @@ router.post('/facebook', async (req, res) => {
           // เชื่อม Facebook กับ account เดิม
           user.facebookId = profile.id;
           if (!user.photo) user.photo = profile.picture?.data?.url;
-          
-          // Give welcome bonus to existing users who don't have points yet
-          if (user.points === undefined || user.points === null || user.points === 0) {
-            user.points = 1000;
-            console.log('🎁 Giving welcome bonus of 1000 points to existing user');
-          }
-          
+
+          // Points are no longer given automatically - users must claim welcome reward
           await user.save();
           console.log('✅ เชื่อม Facebook กับ account เดิม');
         }
@@ -887,30 +943,33 @@ router.post('/facebook', async (req, res) => {
       } else {
         // อัพเดทผู้ใช้ที่มีอยู่
         user.lastLogin = new Date();
-        
-        // Give welcome bonus to existing users who don't have points yet
-        if (user.points === undefined || user.points === null || user.points === 0) {
-          user.points = 1000;
-          console.log('🎁 Giving welcome bonus of 1000 points to existing user');
-        }
-        
+
+        // Points are no longer given automatically - users must claim welcome reward
         await user.save();
         console.log('✅ เจอผู้ใช้เดิม, อัพเดท lastLogin');
       }
 
     } else {
       // Update existing user
-      // Give welcome bonus to existing users who don't have points yet
-      if (user.points === undefined || user.points === null || user.points === 0) {
-        user.points = 1000;
-        console.log('🎁 Giving welcome bonus of 1000 points to existing user');
-      }
+      // Points are no longer given automatically - users must claim welcome reward
       user.lastLogin = new Date();
       if (profile.picture?.data?.url && !user.photo) {
         user.photo = profile.picture.data.url;
       }
       await user.save();
       console.log('✅ เจอผู้ใช้เดิม, อัพเดท lastLogin');
+    }
+
+    // Log login activity
+    try {
+      await logLogin(req, user, 'facebook');
+      logger.activity('user_login', {
+        userId: user._id,
+        category: 'auth',
+        metadata: { method: 'facebook', email: user.email }
+      });
+    } catch (logError) {
+      console.error('Failed to log login activity:', logError.message);
     }
 
     // สร้าง JWT
@@ -921,7 +980,7 @@ router.post('/facebook', async (req, res) => {
         userType: user.userType
       },
       process.env.JWT_SECRET || 'fallback-secret',
-      { expiresIn: '7d' }
+      { expiresIn: '24h' }
     );
 
     console.log('✅ สร้าง JWT สำเร็จสำหรับ:', user.email);
@@ -998,6 +1057,11 @@ router.get('/me', auth, async (req, res) => {
         email: userData.email,
         photo: userData.photo,
         phone: userData.phone,
+        address: userData.address || '',
+        district: userData.district || '',
+        province: userData.province || '',
+        coordinates: userData.coordinates || null,
+        bankAccount: userData.bankAccount || null,
         userType: userData.userType,
         points: userData.points || 0,
         streakStats: userData.streakStats || {
@@ -1035,6 +1099,100 @@ router.get('/me', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error fetching user profile',
+      error: error.message
+    });
+  }
+});
+
+// Update current user profile (PUT /api/auth/me)
+router.put('/me', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const updateData = req.body;
+
+    console.log('📝 Updating user profile:', userId);
+    console.log('📦 Update data:', Object.keys(updateData));
+
+    // Build update object with allowed fields
+    const allowedFields = {
+      name: updateData.name,
+      phone: updateData.phone,
+      photo: updateData.photo,
+      address: updateData.address,
+      district: updateData.district,
+      province: updateData.province,
+    };
+
+    // Handle coordinates
+    if (updateData.latitude !== undefined && updateData.longitude !== undefined) {
+      allowedFields['coordinates.latitude'] = updateData.latitude;
+      allowedFields['coordinates.longitude'] = updateData.longitude;
+    }
+
+    // Handle bankAccount
+    if (updateData.bankAccount) {
+      if (updateData.bankAccount.accountName !== undefined) {
+        allowedFields['bankAccount.accountName'] = updateData.bankAccount.accountName;
+      }
+      if (updateData.bankAccount.accountNumber !== undefined) {
+        allowedFields['bankAccount.accountNumber'] = updateData.bankAccount.accountNumber;
+      }
+      if (updateData.bankAccount.bankName !== undefined) {
+        allowedFields['bankAccount.bankName'] = updateData.bankAccount.bankName;
+      }
+      if (updateData.bankAccount.bankBranch !== undefined) {
+        allowedFields['bankAccount.bankBranch'] = updateData.bankAccount.bankBranch;
+      }
+    }
+
+    // Remove undefined fields
+    Object.keys(allowedFields).forEach(key => {
+      if (allowedFields[key] === undefined) {
+        delete allowedFields[key];
+      }
+    });
+
+    // Update timestamp
+    allowedFields.updatedAt = new Date();
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { $set: allowedFields },
+      { new: true, runValidators: true }
+    ).select('-__v');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    console.log('✅ User profile updated successfully');
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        photo: user.photo,
+        address: user.address,
+        district: user.district,
+        province: user.province,
+        coordinates: user.coordinates,
+        bankAccount: user.bankAccount,
+        userType: user.userType,
+        updatedAt: user.updatedAt
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error updating user profile:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error updating user profile',
       error: error.message
     });
   }

@@ -266,11 +266,11 @@ const getAttractionsByProvince = (provinceName) => {
   // Try different formats
   const key = provinceName.toLowerCase().replace(/\s+/g, '-');
   const directKey = provinceName;
-  
-  return attractionsByProvince[key] || 
-         attractionsByProvince[directKey] || 
-         attractionsByProvince[provinceName] || 
-         [];
+
+  return attractionsByProvince[key] ||
+    attractionsByProvince[directKey] ||
+    attractionsByProvince[provinceName] ||
+    [];
 };
 
 // Get attraction by ID across all provinces
@@ -304,115 +304,115 @@ const getAttractionById = (id) => {
     buriram, surin, siSaKet, yasothon, chaiyaphum, amnatCharoen, nongBuaLamphu, loei, nongKhai, mukdahan, nakhonPhanom, buengKan,
     phuket, krabi, phangNga, trang, songkhla, nakhonSiThammarat, suratThani, phatthalung, chumphon, ranong, satun, pattani, yala, narathiwat
   ];
-  
+
   for (const province of allProvinces) {
     if (province.getAttractionById) {
       const attraction = province.getAttractionById(id);
       if (attraction) return attraction;
     }
   }
-  
+
   return null;
 };
 
 // Get all active attractions across all provinces
 const getAllAttractions = () => {
   const allAttractions = [];
-  
+
   // Add Samut Prakan
   if (samutPrakan.getAllActiveAttractions) {
     allAttractions.push(...samutPrakan.getAllActiveAttractions());
   }
-  
+
   // Add Bangkok
   allAttractions.push(...bangkokAttractions.filter(a => a.isActive));
-  
+
   // Add Pathum Thani
   if (pathumThani.getAllActiveAttractions) {
     allAttractions.push(...pathumThani.getAllActiveAttractions());
   }
-  
+
   // Add Nonthaburi
   if (nonthaburi.getAllActiveAttractions) {
     allAttractions.push(...nonthaburi.getAllActiveAttractions());
   }
-  
+
   // Add Ayutthaya
   if (ayutthaya.getAllActiveAttractions) {
     allAttractions.push(...ayutthaya.getAllActiveAttractions());
   }
-  
+
   // Add Lopburi
   if (lopburi.getAllActiveAttractions) {
     allAttractions.push(...lopburi.getAllActiveAttractions());
   }
-  
+
   // Add Saraburi
   if (saraburi.getAllActiveAttractions) {
     allAttractions.push(...saraburi.getAllActiveAttractions());
   }
-  
+
   // Add Ang Thong
   if (angThong.getAllActiveAttractions) {
     allAttractions.push(...angThong.getAllActiveAttractions());
   }
-  
+
   // Add Singburi
   if (singburi.getAllActiveAttractions) {
     allAttractions.push(...singburi.getAllActiveAttractions());
   }
-  
+
   // Add Chainat
   if (chainat.getAllActiveAttractions) {
     allAttractions.push(...chainat.getAllActiveAttractions());
   }
-  
+
   // Add Northern provinces
   // Add Chiang Mai
   if (chiangMai.getAllActiveAttractions) {
     allAttractions.push(...chiangMai.getAllActiveAttractions());
   }
-  
+
   // Add Chiang Rai
   if (chiangRai.getAllActiveAttractions) {
     allAttractions.push(...chiangRai.getAllActiveAttractions());
   }
-  
+
   // Add Lampang
   if (lampang.getAllActiveAttractions) {
     allAttractions.push(...lampang.getAllActiveAttractions());
   }
-  
+
   // Add Lamphun
   if (lamphun.getAllActiveAttractions) {
     allAttractions.push(...lamphun.getAllActiveAttractions());
   }
-  
+
   // Add Nan
   if (nan.getAllActiveAttractions) {
     allAttractions.push(...nan.getAllActiveAttractions());
   }
-  
+
   // Add Phayao
   if (phayao.getAllActiveAttractions) {
     allAttractions.push(...phayao.getAllActiveAttractions());
   }
-  
+
   // Add Phrae
   if (phrae.getAllActiveAttractions) {
     allAttractions.push(...phrae.getAllActiveAttractions());
   }
-  
+
   // Add Mae Hong Son
   if (maeHongSon.getAllActiveAttractions) {
     allAttractions.push(...maeHongSon.getAllActiveAttractions());
   }
-  
+
   // Add Uttaradit
   if (uttaradit.getAllActiveAttractions) {
     allAttractions.push(...uttaradit.getAllActiveAttractions());
   }
-  
+
   // Add additional Northern provinces
   if (tak && tak.getAllActiveAttractions) allAttractions.push(...tak.getAllActiveAttractions());
   if (sukhothai && sukhothai.getAllActiveAttractions) allAttractions.push(...sukhothai.getAllActiveAttractions());
@@ -421,7 +421,7 @@ const getAllAttractions = () => {
   if (kamphaengPhet && kamphaengPhet.getAllActiveAttractions) allAttractions.push(...kamphaengPhet.getAllActiveAttractions());
   if (nakhonSawan && nakhonSawan.getAllActiveAttractions) allAttractions.push(...nakhonSawan.getAllActiveAttractions());
   if (uthaiThani && uthaiThani.getAllActiveAttractions) allAttractions.push(...uthaiThani.getAllActiveAttractions());
-  
+
   // Add additional Central provinces
   if (nakhonNayok && nakhonNayok.getAllActiveAttractions) allAttractions.push(...nakhonNayok.getAllActiveAttractions());
   if (prachinBuri && prachinBuri.getAllActiveAttractions) allAttractions.push(...prachinBuri.getAllActiveAttractions());
@@ -431,19 +431,19 @@ const getAllAttractions = () => {
   if (samutSongkhram && samutSongkhram.getAllActiveAttractions) allAttractions.push(...samutSongkhram.getAllActiveAttractions());
   if (nakhonPathom && nakhonPathom.getAllActiveAttractions) allAttractions.push(...nakhonPathom.getAllActiveAttractions());
   if (suphanBuri && suphanBuri.getAllActiveAttractions) allAttractions.push(...suphanBuri.getAllActiveAttractions());
-  
+
   // Add Eastern provinces
   if (chonburi && chonburi.getAllActiveAttractions) allAttractions.push(...chonburi.getAllActiveAttractions());
   if (rayong && rayong.getAllActiveAttractions) allAttractions.push(...rayong.getAllActiveAttractions());
   if (chanthaburi && chanthaburi.getAllActiveAttractions) allAttractions.push(...chanthaburi.getAllActiveAttractions());
   if (trat && trat.getAllActiveAttractions) allAttractions.push(...trat.getAllActiveAttractions());
-  
+
   // Add Western provinces
   if (kanchanaburi && kanchanaburi.getAllActiveAttractions) allAttractions.push(...kanchanaburi.getAllActiveAttractions());
   if (ratchaburi && ratchaburi.getAllActiveAttractions) allAttractions.push(...ratchaburi.getAllActiveAttractions());
   if (phetchaburi && phetchaburi.getAllActiveAttractions) allAttractions.push(...phetchaburi.getAllActiveAttractions());
   if (prachuapKhiriKhan && prachuapKhiriKhan.getAllActiveAttractions) allAttractions.push(...prachuapKhiriKhan.getAllActiveAttractions());
-  
+
   // Add Northeastern provinces
   if (khonKaen && khonKaen.getAllActiveAttractions) allAttractions.push(...khonKaen.getAllActiveAttractions());
   if (udonThani && udonThani.getAllActiveAttractions) allAttractions.push(...udonThani.getAllActiveAttractions());
@@ -465,7 +465,7 @@ const getAllAttractions = () => {
   if (mukdahan && mukdahan.getAllActiveAttractions) allAttractions.push(...mukdahan.getAllActiveAttractions());
   if (nakhonPhanom && nakhonPhanom.getAllActiveAttractions) allAttractions.push(...nakhonPhanom.getAllActiveAttractions());
   if (buengKan && buengKan.getAllActiveAttractions) allAttractions.push(...buengKan.getAllActiveAttractions());
-  
+
   // Add Southern provinces
   if (phuket && phuket.getAllActiveAttractions) allAttractions.push(...phuket.getAllActiveAttractions());
   if (krabi && krabi.getAllActiveAttractions) allAttractions.push(...krabi.getAllActiveAttractions());
@@ -481,180 +481,180 @@ const getAllAttractions = () => {
   if (pattani && pattani.getAllActiveAttractions) allAttractions.push(...pattani.getAllActiveAttractions());
   if (yala && yala.getAllActiveAttractions) allAttractions.push(...yala.getAllActiveAttractions());
   if (narathiwat && narathiwat.getAllActiveAttractions) allAttractions.push(...narathiwat.getAllActiveAttractions());
-  
+
   return allAttractions;
 };
 
 // Search attractions by name across all provinces
 const searchAttractions = (searchTerm) => {
   const results = [];
-  
+
   // Search in Samut Prakan
   if (samutPrakan.searchAttractionsByName) {
     results.push(...samutPrakan.searchAttractionsByName(searchTerm));
   }
-  
+
   // Search in Bangkok
   const searchLower = searchTerm.toLowerCase();
-  results.push(...bangkokAttractions.filter(a => 
+  results.push(...bangkokAttractions.filter(a =>
     a.isActive && (
       a.name.toLowerCase().includes(searchLower) ||
       a.nameEn.toLowerCase().includes(searchLower) ||
       a.description.toLowerCase().includes(searchLower)
     )
   ));
-  
+
   // Search in Pathum Thani
   if (pathumThani.searchAttractionsByName) {
     results.push(...pathumThani.searchAttractionsByName(searchTerm));
   }
-  
+
   // Search in Nonthaburi
   if (nonthaburi.searchAttractionsByName) {
     results.push(...nonthaburi.searchAttractionsByName(searchTerm));
   }
-  
+
   // Search in Ayutthaya
   if (ayutthaya.searchAttractionsByName) {
     results.push(...ayutthaya.searchAttractionsByName(searchTerm));
   }
-  
+
   // Search in Lopburi
   if (lopburi.searchAttractionsByName) {
     results.push(...lopburi.searchAttractionsByName(searchTerm));
   }
-  
+
   // Search in Saraburi
   if (saraburi.searchAttractionsByName) {
     results.push(...saraburi.searchAttractionsByName(searchTerm));
   }
-  
+
   // Search in Ang Thong
   if (angThong.searchAttractionsByName) {
     results.push(...angThong.searchAttractionsByName(searchTerm));
   }
-  
+
   // Search in Singburi
   if (singburi.searchAttractionsByName) {
     results.push(...singburi.searchAttractionsByName(searchTerm));
   }
-  
+
   // Search in Chainat
   if (chainat.searchAttractionsByName) {
     results.push(...chainat.searchAttractionsByName(searchTerm));
   }
-  
+
   // Search in Northern provinces
   // Search in Chiang Mai
   if (chiangMai.getAllActiveAttractions) {
     const searchLower = searchTerm.toLowerCase();
-    results.push(...chiangMai.getAllActiveAttractions().filter(a => 
+    results.push(...chiangMai.getAllActiveAttractions().filter(a =>
       a.name.toLowerCase().includes(searchLower) ||
       a.nameEn.toLowerCase().includes(searchLower) ||
       a.description.toLowerCase().includes(searchLower)
     ));
   }
-  
+
   // Search in Chiang Rai
   if (chiangRai.getAllActiveAttractions) {
     const searchLower = searchTerm.toLowerCase();
-    results.push(...chiangRai.getAllActiveAttractions().filter(a => 
+    results.push(...chiangRai.getAllActiveAttractions().filter(a =>
       a.name.toLowerCase().includes(searchLower) ||
       a.nameEn.toLowerCase().includes(searchLower) ||
       a.description.toLowerCase().includes(searchLower)
     ));
   }
-  
+
   // Search in Lampang
   if (lampang.getAllActiveAttractions) {
     const searchLower = searchTerm.toLowerCase();
-    results.push(...lampang.getAllActiveAttractions().filter(a => 
+    results.push(...lampang.getAllActiveAttractions().filter(a =>
       a.name.toLowerCase().includes(searchLower) ||
       a.nameEn.toLowerCase().includes(searchLower) ||
       a.description.toLowerCase().includes(searchLower)
     ));
   }
-  
+
   // Search in Lamphun
   if (lamphun.getAllActiveAttractions) {
     const searchLower = searchTerm.toLowerCase();
-    results.push(...lamphun.getAllActiveAttractions().filter(a => 
+    results.push(...lamphun.getAllActiveAttractions().filter(a =>
       a.name.toLowerCase().includes(searchLower) ||
       a.nameEn.toLowerCase().includes(searchLower) ||
       a.description.toLowerCase().includes(searchLower)
     ));
   }
-  
+
   // Search in Nan
   if (nan.getAllActiveAttractions) {
     const searchLower = searchTerm.toLowerCase();
-    results.push(...nan.getAllActiveAttractions().filter(a => 
+    results.push(...nan.getAllActiveAttractions().filter(a =>
       a.name.toLowerCase().includes(searchLower) ||
       a.nameEn.toLowerCase().includes(searchLower) ||
       a.description.toLowerCase().includes(searchLower)
     ));
   }
-  
+
   // Search in Phayao
   if (phayao.getAllActiveAttractions) {
     const searchLower = searchTerm.toLowerCase();
-    results.push(...phayao.getAllActiveAttractions().filter(a => 
+    results.push(...phayao.getAllActiveAttractions().filter(a =>
       a.name.toLowerCase().includes(searchLower) ||
       a.nameEn.toLowerCase().includes(searchLower) ||
       a.description.toLowerCase().includes(searchLower)
     ));
   }
-  
+
   // Search in Phrae
   if (phrae.getAllActiveAttractions) {
     const searchLower = searchTerm.toLowerCase();
-    results.push(...phrae.getAllActiveAttractions().filter(a => 
+    results.push(...phrae.getAllActiveAttractions().filter(a =>
       a.name.toLowerCase().includes(searchLower) ||
       a.nameEn.toLowerCase().includes(searchLower) ||
       a.description.toLowerCase().includes(searchLower)
     ));
   }
-  
+
   // Search in Mae Hong Son
   if (maeHongSon.getAllActiveAttractions) {
     const searchLower = searchTerm.toLowerCase();
-    results.push(...maeHongSon.getAllActiveAttractions().filter(a => 
+    results.push(...maeHongSon.getAllActiveAttractions().filter(a =>
       a.name.toLowerCase().includes(searchLower) ||
       a.nameEn.toLowerCase().includes(searchLower) ||
       a.description.toLowerCase().includes(searchLower)
     ));
   }
-  
+
   // Search in Uttaradit
   if (uttaradit.getAllActiveAttractions) {
     const searchLower = searchTerm.toLowerCase();
-    results.push(...uttaradit.getAllActiveAttractions().filter(a => 
+    results.push(...uttaradit.getAllActiveAttractions().filter(a =>
       a.name.toLowerCase().includes(searchLower) ||
       a.nameEn.toLowerCase().includes(searchLower) ||
       a.description.toLowerCase().includes(searchLower)
     ));
   }
-  
+
   return results;
 };
 
 // Get attractions by category across all provinces
 const getAttractionsByCategory = (category) => {
   const results = [];
-  
+
   // Get from Samut Prakan
   if (samutPrakan.getAttractionsByCategory) {
     results.push(...samutPrakan.getAttractionsByCategory(category));
   }
-  
+
   // Get from Bangkok
   results.push(...bangkokAttractions.filter(a => a.isActive && a.category === category));
-  
+
   // Get from Pathum Thani
   if (pathumThani.getAttractionsByCategory) {
     results.push(...pathumThani.getAttractionsByCategory(category));
   }
-  
+
   // Get from Northern provinces
   if (chiangMai.getAttractionsByCategory) {
     results.push(...chiangMai.getAttractionsByCategory(category));
@@ -683,7 +683,7 @@ const getAttractionsByCategory = (category) => {
   if (uttaradit.getAttractionsByCategory) {
     results.push(...uttaradit.getAttractionsByCategory(category));
   }
-  
+
   // Get from all remaining provinces
   const allRemainingProvinces = [
     tak, sukhothai, phitsanulok, pichit, kamphaengPhet, nakhonSawan, uthaiThani,
@@ -694,13 +694,13 @@ const getAttractionsByCategory = (category) => {
     buriram, surin, siSaKet, yasothon, chaiyaphum, amnatCharoen, nongBuaLamphu, loei, nongKhai, mukdahan, nakhonPhanom, buengKan,
     phuket, krabi, phangNga, trang, songkhla, nakhonSiThammarat, suratThani, phatthalung, chumphon, ranong, satun, pattani, yala, narathiwat
   ];
-  
+
   for (const province of allRemainingProvinces) {
     if (province && province.getAttractionsByCategory) {
       results.push(...province.getAttractionsByCategory(category));
     }
   }
-  
+
   return results;
 };
 
@@ -726,14 +726,14 @@ module.exports = {
   phrae,
   maeHongSon,
   uttaradit,
-  
+
   // Cross-province functions
   getAttractionsByProvince,
   getAttractionById,
   getAllAttractions,
   searchAttractions,
   getAttractionsByCategory,
-  
+
   // Direct access to province data
   attractionsByProvince
 };

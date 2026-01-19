@@ -134,8 +134,8 @@ const getAttractionById = (id) => {
 };
 
 const getAttractionsByCategory = (category) => {
-  return phraeAttractions.filter(attraction => 
-    attraction.isActive && 
+  return phraeAttractions.filter(attraction =>
+    attraction.isActive &&
     (attraction.category === category || attraction.categories.includes(category))
   );
 };

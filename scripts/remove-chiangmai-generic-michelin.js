@@ -33,7 +33,7 @@ async function removeChiangMaiGenericMichelin() {
     // Count entries
     const countBib = await TouristAttraction.countDocuments(queryBib);
     const countSelected = await TouristAttraction.countDocuments(querySelected);
-    
+
     console.log(`📊 Found ${countBib} entries matching "Chiang Mai Bib Gourmand xx"`);
     console.log(`📊 Found ${countSelected} entries matching "Chiang Mai Michelin Selected xx"`);
 

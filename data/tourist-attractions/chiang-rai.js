@@ -214,8 +214,8 @@ const getAttractionById = (id) => {
 };
 
 const getAttractionsByCategory = (category) => {
-  return chiangRaiAttractions.filter(attraction => 
-    attraction.isActive && 
+  return chiangRaiAttractions.filter(attraction =>
+    attraction.isActive &&
     (attraction.category === category || attraction.categories.includes(category))
   );
 };

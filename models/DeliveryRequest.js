@@ -1,0 +1,154 @@
+const mongoose = require('mongoose');
+
+// DeliveryRequest - คำขอใช้บริการส่งอาหารของร้านค้า
+const deliveryRequestSchema = new mongoose.Schema({
+  requestNumber: {
+    type: String,
+    required: false, // Will be generated in pre-save hook
+    unique: true,
+    sparse: true,
+    index: true,
+  },
+  // ร้านค้าที่ขอใช้บริการ
+  shop: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Shop',
+    required: true,
+    index: true,
+  },
+  // คำสั่งซื้อที่ต้องการส่ง
+  order: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Order',
+    required: true,
+    index: true,
+  },
+  // ที่อยู่ส่ง
+  deliveryAddress: {
+    type: String,
+    required: true,
+  },
+  // พิกัดที่ส่ง
+  deliveryCoordinates: {
+    latitude: Number,
+    longitude: Number,
+  },
+  // ระยะทาง (กิโลเมตร)
+  distance: {
+    type: Number,
+    required: true,
+    min: 0,
+  },
+  // ค่าจัดส่งที่ร้านค้าต้องการให้ลูกค้าจ่าย
+  requestedDeliveryFee: {
+    type: Number,
+    required: true,
+    min: 0,
+  },
+  // ค่าจ้าง rider ที่ร้านค้าพร้อมจ่าย
+  riderFee: {
+    type: Number,
+    required: true,
+    min: 0,
+  },
+  // หมายเหตุ
+  notes: {
+    type: String,
+    default: '',
+    maxlength: 500,
+  },
+  // หมายเลขโทรศัพท์ติดต่อ
+  contactPhone: {
+    type: String,
+    required: true,
+  },
+  // เวลาที่ต้องการส่ง
+  preferredDeliveryTime: {
+    type: Date,
+    default: null,
+  },
+  // สถานะคำขอ
+  status: {
+    type: String,
+    enum: ['pending', 'accepted', 'in_progress', 'completed', 'cancelled', 'expired'],
+    default: 'pending',
+    index: true,
+  },
+  // Rider ที่รับงาน
+  rider: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+    index: true,
+  },
+  // เวลาที่รับงาน
+  acceptedAt: {
+    type: Date,
+    default: null,
+  },
+  // เวลาที่เริ่มส่ง
+  startedAt: {
+    type: Date,
+    default: null,
+  },
+  // เวลาที่ส่งสำเร็จ
+  completedAt: {
+    type: Date,
+    default: null,
+  },
+  // เวลาหมดอายุ (ถ้าไม่มีคนรับ)
+  expiresAt: {
+    type: Date,
+    default: null,
+  },
+}, {
+  timestamps: true,
+});
+
+// Generate request number
+deliveryRequestSchema.pre('save', async function (next) {
+  if (!this.requestNumber || this.isNew) {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      const count = await mongoose.model('DeliveryRequest').countDocuments({
+        createdAt: {
+          $gte: today,
+          $lt: tomorrow
+        }
+      });
+
+      const year = today.getFullYear();
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+      const sequence = String(count + 1).padStart(6, '0');
+
+      this.requestNumber = `DRQ${year}${month}${day}${sequence}`;
+    } catch (error) {
+      console.error('Error generating delivery request number:', error);
+      const timestamp = Date.now().toString().slice(-10);
+      this.requestNumber = `DRQ${timestamp}`;
+    }
+  }
+  next();
+});
+
+// Auto-expire pending requests after 30 minutes
+deliveryRequestSchema.pre('save', function (next) {
+  if (this.isNew && this.status === 'pending' && !this.expiresAt) {
+    this.expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+  }
+  next();
+});
+
+// Indexes
+deliveryRequestSchema.index({ shop: 1, status: 1, createdAt: -1 });
+deliveryRequestSchema.index({ order: 1 });
+deliveryRequestSchema.index({ rider: 1, status: 1 });
+deliveryRequestSchema.index({ status: 1, expiresAt: 1 });
+deliveryRequestSchema.index({ status: 1, createdAt: -1 });
+
+module.exports = mongoose.model('DeliveryRequest', deliveryRequestSchema);

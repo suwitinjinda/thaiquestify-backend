@@ -154,8 +154,8 @@ const getAttractionById = (id) => {
 };
 
 const getAttractionsByCategory = (category) => {
-  return maeHongSonAttractions.filter(attraction => 
-    attraction.isActive && 
+  return maeHongSonAttractions.filter(attraction =>
+    attraction.isActive &&
     (attraction.category === category || attraction.categories.includes(category))
   );
 };
