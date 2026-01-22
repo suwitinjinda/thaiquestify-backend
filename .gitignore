@@ -83,3 +83,8 @@ Thumbs.db
 # dotenv environment variables file
 .env
 .env.testservice-account-key.json
+service-account-key.json
+
+# Uploads directory (keep directory structure but ignore files)
+uploads/**/*
+!uploads/**/.gitkeep

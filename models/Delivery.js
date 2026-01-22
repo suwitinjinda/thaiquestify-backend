@@ -30,10 +30,16 @@ const deliverySchema = new mongoose.Schema({
     required: true,
     index: true,
   },
-  // คนส่ง (rider)
+  // คนส่ง (rider) - User ID for reference
   rider: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
+    default: null,
+    index: true,
+  },
+  // Rider Code for easier querying
+  riderCode: {
+    type: String,
     default: null,
     index: true,
   },
@@ -70,10 +76,22 @@ const deliverySchema = new mongoose.Schema({
     default: 0,
     min: 0,
   },
+  // ราคาอาหาร
+  foodCost: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  // ราคารวมทั้งหมด (food cost + rider cost)
+  totalPrice: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
   // สถานะการส่ง
   status: {
     type: String,
-    enum: ['pending', 'assigned', 'picked_up', 'on_the_way', 'delivered', 'cancelled', 'failed'],
+    enum: ['pending', 'assigned', 'heading_to_shop', 'at_shop', 'picked_up', 'on_the_way', 'delivered', 'cancelled', 'failed'],
     default: 'pending',
     index: true,
   },
@@ -98,6 +116,11 @@ const deliverySchema = new mongoose.Schema({
     default: '',
     maxlength: 500,
   },
+  // รูปภาพส่งอาหาร (หลักฐาน)
+  deliveryPhoto: {
+    type: String,
+    default: null,
+  },
   // หมายเลขโทรศัพท์ติดต่อ
   contactPhone: {
     type: String,
@@ -120,6 +143,40 @@ const deliverySchema = new mongoose.Schema({
       type: Date,
       default: null,
     },
+  },
+  // Shop payment (points paid to rider when picking up)
+  shopPaidPoints: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  // Shop payment timestamp
+  shopPaidAt: {
+    type: Date,
+    default: null,
+  },
+  // Rider penalty points (if rider cancels)
+  riderPenaltyPoints: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  // Is this a reassignment?
+  isReassignment: {
+    type: Boolean,
+    default: false,
+  },
+  // Previous rider (if reassigned)
+  previousRider: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
+  // Reassignment fee
+  reassignmentFee: {
+    type: Number,
+    default: 0,
+    min: 0,
   },
 }, {
   timestamps: true,
@@ -159,6 +216,7 @@ deliverySchema.pre('save', async function (next) {
 // Indexes
 deliverySchema.index({ order: 1 });
 deliverySchema.index({ rider: 1, status: 1, createdAt: -1 });
+deliverySchema.index({ riderCode: 1, status: 1, createdAt: -1 });
 deliverySchema.index({ shop: 1, status: 1 });
 deliverySchema.index({ customer: 1, status: 1 });
 deliverySchema.index({ status: 1, createdAt: -1 });

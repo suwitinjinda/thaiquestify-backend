@@ -74,13 +74,29 @@ const deliveryRequestSchema = new mongoose.Schema({
     default: 'pending',
     index: true,
   },
-  // Rider ที่รับงาน
+  // Rider ที่รับงาน - User ID for reference
   rider: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     default: null,
     index: true,
   },
+  // Rider Code for easier querying
+  riderCode: {
+    type: String,
+    default: null,
+    index: true,
+  },
+  // Riders ที่ปฏิเสธงานนี้ (เพื่อไม่ให้แสดงซ้ำ)
+  rejectedBy: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  }],
+  // Riders ที่เคยได้รับ notification แล้ว (เพื่อไม่ให้ส่งซ้ำ)
+  notifiedRiders: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  }],
   // เวลาที่รับงาน
   acceptedAt: {
     type: Date,
@@ -100,6 +116,58 @@ const deliveryRequestSchema = new mongoose.Schema({
   expiresAt: {
     type: Date,
     default: null,
+  },
+  // Priority (calculated from distance)
+  priority: {
+    type: Number,
+    default: 0,
+    min: 1,
+    max: 10,
+    index: true,
+  },
+  // Assignment method
+  assignmentMethod: {
+    type: String,
+    enum: ['auto', 'manual'],
+    default: 'auto',
+  },
+  // Assignment attempts
+  assignmentAttempts: {
+    type: Number,
+    default: 0,
+  },
+  // Last assignment attempt time
+  lastAssignmentAttempt: {
+    type: Date,
+    default: null,
+  },
+  // Reassignment fee (if reassigned)
+  reassignmentFee: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  // Rider canceled flag
+  riderCanceled: {
+    type: Boolean,
+    default: false,
+  },
+  // Rider cancel reason
+  riderCancelReason: {
+    type: String,
+    default: '',
+    maxlength: 500,
+  },
+  // Customer canceled flag
+  customerCanceled: {
+    type: Boolean,
+    default: false,
+  },
+  // Cancellation reason
+  cancellationReason: {
+    type: String,
+    default: '',
+    maxlength: 500,
   },
 }, {
   timestamps: true,
@@ -136,11 +204,12 @@ deliveryRequestSchema.pre('save', async function (next) {
   next();
 });
 
-// Auto-expire pending requests after 30 minutes
+// Auto-expire pending requests - use expiresAt if already set, otherwise will be set by deliveryAssignmentService
+// Note: expiresAt is now set by deliveryAssignmentService based on admin setting (delivery_assignment_timeout)
 deliveryRequestSchema.pre('save', function (next) {
-  if (this.isNew && this.status === 'pending' && !this.expiresAt) {
-    this.expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
-  }
+  // Only set default expiresAt if not already set and this is a new pending request
+  // But deliveryAssignmentService will set it properly, so we don't set a default here
+  // This prevents overriding the timeout value from admin settings
   next();
 });
 
@@ -148,6 +217,7 @@ deliveryRequestSchema.pre('save', function (next) {
 deliveryRequestSchema.index({ shop: 1, status: 1, createdAt: -1 });
 deliveryRequestSchema.index({ order: 1 });
 deliveryRequestSchema.index({ rider: 1, status: 1 });
+deliveryRequestSchema.index({ riderCode: 1, status: 1 });
 deliveryRequestSchema.index({ status: 1, expiresAt: 1 });
 deliveryRequestSchema.index({ status: 1, createdAt: -1 });
 

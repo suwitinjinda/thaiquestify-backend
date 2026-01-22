@@ -105,8 +105,6 @@ questSchema.virtual('daysRemaining').get(function () {
   return Math.max(0, diffDays);
 });
 
-module.exports = mongoose.model('Quest', questSchema);
-
 // Generate unique QR code before saving
 questSchema.pre('save', async function (next) {
   // Calculate end date based on duration
@@ -117,38 +115,24 @@ questSchema.pre('save', async function (next) {
 
   // Generate unique QR code if not provided
   if (!this.qrCode) {
-    this.qrCode = await generateUniqueQRCode();
-  }
+    const Quest = this.constructor;
+    let isUnique = false;
+    let qrCode;
 
-  next();
-});
+    while (!isUnique) {
+      // Generate random QR code (you can use any format you prefer)
+      qrCode = `QR-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-// Function to generate unique QR code
-async function generateUniqueQRCode() {
-  const Quest = mongoose.model('Quest');
-  let isUnique = false;
-  let qrCode;
-
-  while (!isUnique) {
-    // Generate random QR code (you can use any format you prefer)
-    qrCode = `QR-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    // Check if QR code already exists
-    const existingQuest = await Quest.findOne({ qrCode });
-    if (!existingQuest) {
-      isUnique = true;
+      // Check if QR code already exists
+      const existingQuest = await Quest.findOne({ qrCode });
+      if (!existingQuest) {
+        isUnique = true;
+      }
     }
+
+    this.qrCode = qrCode;
   }
 
-  return qrCode;
-}
-
-// Calculate end date based on duration
-questSchema.pre('save', function (next) {
-  if (this.isModified('duration') || this.isNew) {
-    this.endDate = new Date(this.startDate);
-    this.endDate.setDate(this.endDate.getDate() + this.duration);
-  }
   next();
 });
 
@@ -173,4 +157,5 @@ questSchema.pre(/^find/, function (next) {
   next();
 });
 
+// Export the model (only once, at the end, after all methods are defined)
 module.exports = mongoose.model('Quest', questSchema);

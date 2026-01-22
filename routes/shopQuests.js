@@ -9,6 +9,204 @@ const Shop = require('../models/Shop');
 // Apply auth middleware to all routes
 router.use(auth);
 
+// Get partner's quests (quests created by partner for their shops)
+router.get('/partner/quests', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { status, page = 1, limit = 20 } = req.query;
+
+    console.log(`🔍 [GET /shop/quests/partner/quests] Fetching quests for partner`);
+    console.log(`   - User ID from JWT: ${userId}`);
+    console.log(`   - Query params: status=${status}, page=${page}, limit=${limit}`);
+
+    // Check if user is partner (has partnerId)
+    const User = require('../models/User');
+    const user = await User.findById(userId).select('partnerId');
+    
+    console.log(`   - User lookup result:`, {
+      found: !!user,
+      partnerId: user?.partnerId?.toString()
+    });
+    
+    if (!user || !user.partnerId) {
+      console.log(`   ❌ Access denied - No partnerId found`);
+      return res.status(403).json({ 
+        success: false,
+        message: 'Access denied. Partner role required.' 
+      });
+    }
+
+    // Get all shops managed by this partner
+    // Note: Shop.partnerId should reference User._id, but check both possibilities
+    // Try userId first (correct way), then partnerId as fallback (in case of old data)
+    let partnerShops = await Shop.find({ partnerId: userId }).select('_id shopId partnerId').lean();
+    
+    // Fallback: if no shops found with userId, try with Partner document _id
+    if (partnerShops.length === 0 && user.partnerId) {
+      console.log(`   ⚠️ No shops found with userId, trying Partner _id as fallback...`);
+      partnerShops = await Shop.find({ partnerId: user.partnerId }).select('_id shopId partnerId').lean();
+    }
+    
+    // Debug: Check what shops exist in database
+    if (partnerShops.length === 0) {
+      const allShopsSample = await Shop.find({}).select('_id shopId partnerId shopName').limit(5).lean();
+      console.log(`   🔍 Debug: Sample shops in database:`, allShopsSample.map(s => ({
+        shopId: s.shopId,
+        shopName: s.shopName,
+        partnerId: s.partnerId?.toString(),
+        matchesUserId: s.partnerId?.toString() === userId.toString(),
+        matchesPartnerId: s.partnerId?.toString() === user.partnerId?.toString()
+      })));
+    }
+    
+    const shopObjectIds = partnerShops.map(shop => shop._id);
+    const shopIdStrings = partnerShops.map(shop => shop.shopId).filter(Boolean);
+
+    console.log(`🔍 Partner shops found: ${partnerShops.length}`, {
+      userId: userId.toString(),
+      partnerId: user.partnerId?.toString(),
+      shopObjectIds: shopObjectIds.length,
+      shopIdStrings: shopIdStrings.length,
+      shopIds: shopIdStrings
+    });
+
+    if (shopObjectIds.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: 0,
+          pages: 0
+        }
+      });
+    }
+
+    // Query by both shop (ObjectId) and shopId (String) to catch all quests
+    // Also include quests created by this partner user
+    // This ensures we find quests regardless of which field was used during creation
+    let baseQuery = { 
+      $or: [
+        { shop: { $in: shopObjectIds } },
+        { shopId: { $in: shopIdStrings } },
+        { createdBy: userId } // Also include quests created by this partner
+      ],
+      isDeleted: { $ne: true } 
+    };
+
+    if (status && status !== 'all') {
+      baseQuery.status = status;
+    }
+
+    // Debug: Check quests without filters first
+    const allQuestsForShops = await Quest.find({
+      $or: [
+        { shop: { $in: shopObjectIds } },
+        { shopId: { $in: shopIdStrings } },
+        { createdBy: userId }
+      ]
+    }).select('_id name shop shopId createdBy isDeleted status type').lean();
+
+    console.log(`🔍 Debug: Found ${allQuestsForShops.length} quests (before filters)`);
+    console.log(`   - Shop ObjectIds:`, shopObjectIds.map(id => id.toString()));
+    console.log(`   - Shop ID Strings:`, shopIdStrings);
+    console.log(`   - User ID (createdBy):`, userId.toString());
+    console.log(`   - Partner ID:`, user.partnerId.toString());
+    
+    if (allQuestsForShops.length > 0) {
+      console.log(`   - Quest details:`, allQuestsForShops.map(q => ({
+        id: q._id.toString(),
+        name: q.name,
+        shop: q.shop?.toString(),
+        shopId: q.shopId,
+        createdBy: q.createdBy?.toString(),
+        isDeleted: q.isDeleted,
+        status: q.status,
+        type: q.type,
+        matchesShop: q.shop && shopObjectIds.some(id => id.toString() === q.shop.toString()),
+        matchesShopId: q.shopId && shopIdStrings.includes(q.shopId),
+        matchesCreatedBy: q.createdBy && q.createdBy.toString() === userId.toString()
+      })));
+    } else {
+      console.log(`   ⚠️ No quests found matching any criteria!`);
+      // Try to find ANY quests created by this user (including deleted ones)
+      const anyQuestsByUser = await Quest.find({ createdBy: userId }).select('_id name shop shopId isDeleted status').limit(10).lean();
+      console.log(`   - Checking: Found ${anyQuestsByUser.length} quests created by this user (any shop, any status)`, 
+        anyQuestsByUser.map(q => ({ 
+          id: q._id.toString(), 
+          name: q.name, 
+          shop: q.shop?.toString(), 
+          shopId: q.shopId,
+          isDeleted: q.isDeleted,
+          status: q.status
+        }))
+      );
+      
+      // Also check quests for the shops (including deleted)
+      const anyQuestsForShops = await Quest.find({
+        $or: [
+          { shop: { $in: shopObjectIds } },
+          { shopId: { $in: shopIdStrings } }
+        ]
+      }).select('_id name shop shopId createdBy isDeleted status').limit(10).lean();
+      console.log(`   - Checking: Found ${anyQuestsForShops.length} quests for partner shops (any creator, any status)`, 
+        anyQuestsForShops.map(q => ({ 
+          id: q._id.toString(), 
+          name: q.name, 
+          shop: q.shop?.toString(), 
+          shopId: q.shopId,
+          createdBy: q.createdBy?.toString(),
+          isDeleted: q.isDeleted,
+          status: q.status
+        }))
+      );
+    }
+
+    const quests = await Quest.find(baseQuery)
+      .populate('template', 'name description rewardPoints')
+      .populate('shop', 'shopName province phone shopId')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+
+    const total = await Quest.countDocuments(baseQuery);
+
+    console.log(`✅ Found ${quests.length} quests for partner (total: ${total})`, {
+      query: JSON.stringify(baseQuery),
+      questIds: quests.map(q => q._id)
+    });
+
+    console.log(`✅ [GET /shop/quests/partner/quests] Returning ${quests.length} quests to partner ${userId}`);
+
+    res.json({
+      success: true,
+      data: quests,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      },
+      debug: {
+        partnerShopsCount: partnerShops.length,
+        shopObjectIds: shopObjectIds.length,
+        shopIdStrings: shopIdStrings.length,
+        allQuestsFound: allQuestsForShops.length,
+        filteredQuests: quests.length
+      }
+    });
+  } catch (error) {
+    console.error('❌ [GET /shop/quests/partner/quests] Error:', error);
+    console.error('❌ Error stack:', error.stack);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+});
+
 // Get quests - Role-based filtering
 // router.get('/quests', async (req, res) => {
 //   try {
@@ -167,8 +365,8 @@ router.get('/:id', async (req, res) => {
   try {
     const quest = await Quest.findOne({ _id: req.params.id, isDeleted: { $ne: true } })
       .populate('template')
-      .populate('shop', 'shopName province phone user')
-      .populate('submissions.user', 'name email');
+      .populate('shop', 'shopName province phone user shopId')
+      .populate('submissions.userId', 'name email');
 
     if (!quest) {
       return res.status(404).json({ 
@@ -188,12 +386,28 @@ router.get('/:id', async (req, res) => {
           message: 'Access denied. You can only view your shop quests.' 
         });
       }
+    } else if (req.user.partnerId) {
+      // Partner can view quests for their shops
+      // Note: Shop.partnerId references User._id, not Partner._id
+      const partnerShop = await Shop.findOne({ partnerId: req.user.id, _id: quest.shop });
+      if (!partnerShop) {
+        return res.status(403).json({ 
+          success: false,
+          message: 'Access denied. You can only view quests for your shops.' 
+        });
+      }
     }
     // Admin can access any quest without additional checks
 
+    // Convert requiredData Map to object for JSON response
+    const questData = quest.toObject();
+    if (questData.requiredData && questData.requiredData instanceof Map) {
+      questData.requiredData = Object.fromEntries(questData.requiredData);
+    }
+
     res.json({
       success: true,
-      data: quest
+      data: questData
     });
 
   } catch (error) {
@@ -293,7 +507,7 @@ router.get('/shop/:shopId/quests', auth, async (req, res) => {
   }
 });
 // Toggle quest active status (activate/deactivate)
-router.patch('/quests/:id/toggle-active', async (req, res) => {
+router.patch('/:id/toggle-active', async (req, res) => {
   try {
     const quest = await Quest.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
 
@@ -304,13 +518,23 @@ router.patch('/quests/:id/toggle-active', async (req, res) => {
       });
     }
 
-    // Verify ownership for shop owners
+    // Verify ownership for shop owners and partners
     if (req.user.userType === 'shop') {
       const shop = await Shop.findOne({ user: req.user.id });
       if (!shop || quest.shop.toString() !== shop._id.toString()) {
         return res.status(403).json({ 
           success: false,
           message: 'Access denied' 
+        });
+      }
+    } else if (req.user.partnerId) {
+      // Partner can manage quests for their shops
+      // Note: Shop.partnerId references User._id, not Partner._id
+      const partnerShop = await Shop.findOne({ partnerId: req.user.id, _id: quest.shop });
+      if (!partnerShop) {
+        return res.status(403).json({ 
+          success: false,
+          message: 'Access denied. You can only manage quests for your shops.' 
         });
       }
     }
@@ -346,9 +570,20 @@ router.patch('/quests/:id/toggle-active', async (req, res) => {
 });
 
 // Update quest
-router.put('/quests/:id', async (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
-    const { name, description, budget, maxParticipants, duration } = req.body;
+    const { 
+      name, 
+      description, 
+      budget, 
+      maxParticipants, 
+      duration,
+      title, // Alias for name (from frontend)
+      menuItems, // For product_review quests
+      rewardType, // 'point' or 'coupon'
+      rewardPoints, // For point rewards
+      couponId // For coupon rewards
+    } = req.body;
     
     const quest = await Quest.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
 
@@ -359,13 +594,23 @@ router.put('/quests/:id', async (req, res) => {
       });
     }
 
-    // Verify ownership for shop owners
+    // Verify ownership for shop owners and partners
     if (req.user.userType === 'shop') {
       const shop = await Shop.findOne({ user: req.user.id });
       if (!shop || quest.shop.toString() !== shop._id.toString()) {
         return res.status(403).json({ 
           success: false,
           message: 'Access denied' 
+        });
+      }
+    } else if (req.user.partnerId) {
+      // Partner can manage quests for their shops
+      // Note: Shop.partnerId references User._id, not Partner._id
+      const partnerShop = await Shop.findOne({ partnerId: req.user.id, _id: quest.shop });
+      if (!partnerShop) {
+        return res.status(403).json({ 
+          success: false,
+          message: 'Access denied. You can only manage quests for your shops.' 
         });
       }
     }
@@ -390,8 +635,8 @@ router.put('/quests/:id', async (req, res) => {
     }
 
     // Update quest fields
-    if (name) quest.name = name;
-    if (description) quest.description = description;
+    if (name || title) quest.name = name || title;
+    if (description !== undefined) quest.description = description;
     if (budget) quest.budget = budget;
     if (maxParticipants) quest.maxParticipants = maxParticipants;
     if (duration) {
@@ -400,6 +645,33 @@ router.put('/quests/:id', async (req, res) => {
       quest.endDate.setDate(quest.endDate.getDate() + duration);
     }
     quest.rewardAmount = rewardAmount;
+    
+    // Update requiredData for product_review quests
+    if (quest.type === 'product_review' || menuItems || rewardType) {
+      if (!quest.requiredData) {
+        quest.requiredData = new Map();
+      }
+      
+      if (menuItems && Array.isArray(menuItems)) {
+        quest.requiredData.set('menuItems', menuItems);
+      }
+      
+      if (rewardType) {
+        quest.requiredData.set('rewardType', rewardType);
+        if (rewardType === 'point' && rewardPoints !== undefined) {
+          quest.rewardPoints = parseInt(rewardPoints) || 0;
+          quest.requiredData.set('rewardPoints', quest.rewardPoints);
+        } else if (rewardType === 'coupon' && couponId) {
+          quest.requiredData.set('couponId', couponId);
+        }
+      } else if (rewardPoints !== undefined) {
+        // Update reward points if provided
+        quest.rewardPoints = parseInt(rewardPoints) || 0;
+        if (quest.requiredData) {
+          quest.requiredData.set('rewardPoints', quest.rewardPoints);
+        }
+      }
+    }
 
     // Handle budget changes for shop owners
     if (req.user.userType === 'shop' && budget && budget !== quest.budget) {
@@ -445,7 +717,7 @@ router.put('/quests/:id', async (req, res) => {
 });
 
 // Delete quest (soft delete)
-router.delete('/quests/:id', async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const quest = await Quest.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
 
@@ -456,13 +728,23 @@ router.delete('/quests/:id', async (req, res) => {
       });
     }
 
-    // Verify ownership for shop owners
+    // Verify ownership for shop owners and partners
     if (req.user.userType === 'shop') {
       const shop = await Shop.findOne({ user: req.user.id });
       if (!shop || quest.shop.toString() !== shop._id.toString()) {
         return res.status(403).json({ 
           success: false,
           message: 'Access denied' 
+        });
+      }
+    } else if (req.user.partnerId) {
+      // Partner can manage quests for their shops
+      // Note: Shop.partnerId references User._id, not Partner._id
+      const partnerShop = await Shop.findOne({ partnerId: req.user.id, _id: quest.shop });
+      if (!partnerShop) {
+        return res.status(403).json({ 
+          success: false,
+          message: 'Access denied. You can only manage quests for your shops.' 
         });
       }
     }
@@ -489,7 +771,15 @@ router.delete('/quests/:id', async (req, res) => {
     }
 
     // Soft delete the quest
-    await quest.softDelete();
+    if (typeof quest.softDelete === 'function') {
+      await quest.softDelete();
+    } else {
+      // Fallback: manual soft delete if method is not available
+      quest.isDeleted = true;
+      quest.isActive = false;
+      quest.status = 'cancelled';
+      await quest.save();
+    }
 
     res.json({
       success: true,
@@ -507,7 +797,7 @@ router.delete('/quests/:id', async (req, res) => {
 });
 
 // Update quest status
-router.patch('/quests/:id/status', async (req, res) => {
+router.patch('/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
     const quest = await Quest.findOne({ _id: req.params.id, isDeleted: { $ne: true } });
@@ -919,6 +1209,181 @@ router.get('/admin/quests-stats', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Admin quests stats error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+});
+
+// Create quest from menu items (for frontend /shop/quests/create endpoint)
+// Note: auth is already applied globally via router.use(auth) at the top
+router.post('/create', async (req, res) => {
+  try {
+    console.log('🔄 Creating quest from menu - Full user object:', JSON.stringify(req.user, null, 2));
+    console.log('📦 Request data:', req.body);
+    
+    // Debug: Check user type
+    console.log('🔍 User type check:', {
+      userType: req.user?.userType,
+      isShop: req.user?.userType === 'shop',
+      isAdmin: req.user?.userType === 'admin',
+      isPartner: req.user?.userType === 'partner',
+      userId: req.user?.id || req.user?._id
+    });
+    
+    // Check authentication
+    if (!req.user || !req.user.userType) {
+      console.log('❌ Access denied - No user or userType:', {
+        hasUser: !!req.user,
+        userType: req.user?.userType,
+        fullUser: req.user
+      });
+      return res.status(403).json({ 
+        success: false,
+        message: 'Access denied. Authentication required.' 
+      });
+    }
+
+    const { shopId, title, description, menuItems, rewardType, rewardPoints, couponId, maxParticipants } = req.body;
+    
+    // Validate required fields
+    if (!shopId || !title || !menuItems || !Array.isArray(menuItems) || menuItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: shopId, title, menuItems (array)'
+      });
+    }
+
+    if (!rewardType || (rewardType === 'point' && !rewardPoints) || (rewardType !== 'point' && !couponId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing reward: rewardType must be "point" with rewardPoints, or provide couponId'
+      });
+    }
+
+    // Validate maxParticipants
+    const participantLimit = maxParticipants ? parseInt(maxParticipants) : 100; // Default to 100 if not provided
+    if (isNaN(participantLimit) || participantLimit < 1 || participantLimit > 10000) {
+      return res.status(400).json({
+        success: false,
+        message: 'maxParticipants must be a number between 1 and 10000'
+      });
+    }
+
+    // Verify the shop exists by shopId
+    const shop = await Shop.findOne({ shopId: shopId });
+    if (!shop) {
+      return res.status(404).json({ 
+        success: false,
+        message: `Shop not found with ID: ${shopId}` 
+      });
+    }
+
+    // Check permissions - Allow if:
+    // 1. User is admin (can create for any shop)
+    // 2. User's partnerId matches shop's partnerId (partner of this shop)
+    // 3. User owns the shop (user field matches)
+    const userId = req.user._id || req.user.id;
+    const userPartnerId = req.user.partnerId;
+    const shopPartnerId = shop.partnerId;
+    const shopOwnerId = shop.user;
+
+    const isAdmin = req.user.userType === 'admin';
+    const isPartnerOfShop = userPartnerId && shopPartnerId && 
+      (userPartnerId.toString() === shopPartnerId.toString() || 
+       userId.toString() === shopPartnerId.toString());
+    const isShopOwner = shopOwnerId && userId && 
+      (userId.toString() === shopOwnerId.toString());
+
+    console.log('🔍 Permission check:', {
+      userId: userId?.toString(),
+      userType: req.user.userType,
+      userPartnerId: userPartnerId?.toString(),
+      shopPartnerId: shopPartnerId?.toString(),
+      shopOwnerId: shopOwnerId?.toString(),
+      shopId: shopId,
+      isAdmin,
+      isPartnerOfShop,
+      isShopOwner,
+      allowed: isAdmin || isPartnerOfShop || isShopOwner
+    });
+
+    if (!isAdmin && !isPartnerOfShop && !isShopOwner) {
+      return res.status(403).json({ 
+        success: false,
+        message: 'Access denied. You must be the partner or owner of this shop, or an admin.' 
+      });
+    }
+
+    // Generate QR code
+    const generateQRCode = () => {
+      const timestamp = Date.now();
+      const random = Math.random().toString(36).substr(2, 8);
+      return `QR-${timestamp}-${random}`;
+    };
+
+    // Create quest from menu items
+    // Note: Points are deducted from system pool when users complete quests
+    // Users receive points when they complete the quest (handled in quest completion logic)
+    const quest = new Quest({
+      name: title,
+      description: description || '',
+      shopId: shopId,
+      shop: shop._id,
+      type: 'product_review', // Menu-based quests are typically product reviews
+      verificationMethod: 'manual_review', // Menu quests usually need manual review
+      rewardPoints: rewardType === 'point' ? parseInt(rewardPoints) : 0,
+      // Store menu items in requiredData
+      requiredData: {
+        menuItems: menuItems,
+        rewardType: rewardType,
+        ...(couponId && { couponId: couponId })
+      },
+      // Set default values for menu-based quests
+      budget: 0, // Menu quests don't have budget (points are deducted from system pool, not from shop/partner)
+      rewardAmount: 0,
+      maxParticipants: participantLimit, // User-specified limit for how many users can join
+      currentParticipants: 0,
+      duration: 30, // 30 days default for menu quests
+      status: 'active',
+      isActive: true,
+      createdBy: req.user._id,
+      startDate: new Date(),
+      endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+      qrCode: generateQRCode(),
+      submissions: [],
+      totalSpent: 0,
+      isDeleted: false
+    });
+
+    await quest.save();
+    
+    // Populate related data
+    await quest.populate('shop', 'shopName province shopId');
+    await quest.populate('createdBy', 'name email');
+
+    console.log('✅ Quest created from menu:', {
+      id: quest._id,
+      name: quest.name,
+      shopId: quest.shopId,
+      shop: quest.shop?.shopName,
+      menuItems: menuItems.length,
+      rewardType: rewardType,
+      rewardPoints: quest.rewardPoints,
+      maxParticipants: quest.maxParticipants,
+      note: 'Points will be deducted from system pool when users complete quest'
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Quest created successfully',
+      data: quest
+    });
+
+  } catch (error) {
+    console.error('❌ Create quest from menu error:', error);
     res.status(500).json({ 
       success: false,
       message: 'Server error', 

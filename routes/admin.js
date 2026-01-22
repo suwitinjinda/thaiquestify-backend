@@ -11,6 +11,7 @@ const PointSystem = require('../models/PointSystem');
 const PointTransaction = require('../models/PointTransaction');
 const CashReward = require('../models/CashReward');
 const Reward = require('../models/Reward');
+const Rider = require('../models/Rider');
 
 /**
  * GET /api/v2/admin/dashboard
@@ -264,7 +265,7 @@ router.post('/quests/:questId/approve', auth, adminAuth, async (req, res) => {
 
     const quest = await SocialQuest.findByIdAndUpdate(
       questId,
-      { 
+      {
         status: 'active',
         approvedBy: req.user.id,
         approvedAt: new Date()
@@ -405,16 +406,16 @@ router.post('/participations/:participationId/approve', auth, adminAuth, async (
     const questOwnerId = participation.quest?.owner;
     const pointsReward = participation.quest?.pointsReward || 1;
     const pointsCost = participation.quest?.pointsCost || 0;
-    
+
     // Check how many approved participations exist BEFORE this approval
     const approvedCountBefore = await SocialQuestParticipation.countDocuments({
       quest: participation.quest._id,
       status: 'approved',
       _id: { $ne: participation._id }
     });
-    
+
     const isFirstApproval = approvedCountBefore === 0;
-    
+
     // Check if owner has enough points BEFORE approving
     if (questOwnerId) {
       const owner = await User.findById(questOwnerId);
@@ -424,10 +425,10 @@ router.post('/participations/:participationId/approve', auth, adminAuth, async (
           message: 'Quest owner not found'
         });
       }
-      
+
       // Calculate total points needed: pointsReward + pointsCost (if first approval)
       const totalPointsNeeded = pointsReward + (isFirstApproval ? pointsCost : 0);
-      
+
       if (owner.points < totalPointsNeeded) {
         // Reject all pending participations for this quest automatically
         const pendingParticipations = await SocialQuestParticipation.find({
@@ -476,75 +477,75 @@ router.post('/participations/:participationId/approve', auth, adminAuth, async (
 
     // Complete daily quest if this participation is for a social quest in daily quests
     try {
-        const DailyQuestService = require('../new-services/daily-quests/dailyQuestService');
-        const virtualQuestId = `social_${participation.quest._id.toString()}`;
-        const user = await User.findById(participation.participant);
-        
-        if (user && user.dailyQuestProgress && user.dailyQuestProgress.quests) {
-            const questProgress = user.dailyQuestProgress.quests.find(
-                qp => qp.questId && qp.questId.toString() === virtualQuestId
-            );
+      const DailyQuestService = require('../new-services/daily-quests/dailyQuestService');
+      const virtualQuestId = `social_${participation.quest._id.toString()}`;
+      const user = await User.findById(participation.participant);
 
-            // ถ้ายังไม่ complete ให้ complete ทันที
-            if (questProgress && !questProgress.completed) {
-                questProgress.completed = true;
-                questProgress.completedAt = new Date();
-                questProgress.points = 1; // Social quest ใน daily quest ให้ 1 แต้ม
+      if (user && user.dailyQuestProgress && user.dailyQuestProgress.quests) {
+        const questProgress = user.dailyQuestProgress.quests.find(
+          qp => qp.questId && qp.questId.toString() === virtualQuestId
+        );
 
-                // อัพเดท streak stats
-                if (!user.streakStats) {
-                    user.streakStats = {
-                        currentStreak: 0,
-                        longestStreak: 0,
-                        lastQuestDate: null,
-                        totalQuestsCompleted: 0,
-                        totalPointsEarned: 0,
-                        dailyQuestsCompletedToday: 0,
-                        lastResetDate: null
-                    };
-                }
+        // ถ้ายังไม่ complete ให้ complete ทันที
+        if (questProgress && !questProgress.completed) {
+          questProgress.completed = true;
+          questProgress.completedAt = new Date();
+          questProgress.points = 1; // Social quest ใน daily quest ให้ 1 แต้ม
 
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                const isFirstQuestOfDay = user.streakStats.dailyQuestsCompletedToday === 0;
+          // อัพเดท streak stats
+          if (!user.streakStats) {
+            user.streakStats = {
+              currentStreak: 0,
+              longestStreak: 0,
+              lastQuestDate: null,
+              totalQuestsCompleted: 0,
+              totalPointsEarned: 0,
+              dailyQuestsCompletedToday: 0,
+              lastResetDate: null
+            };
+          }
 
-                if (isFirstQuestOfDay) {
-                    const yesterday = new Date(today);
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    const lastQuestDate = user.streakStats.lastQuestDate
-                        ? new Date(user.streakStats.lastQuestDate).setHours(0, 0, 0, 0)
-                        : null;
-                    const yesterdayStart = yesterday.getTime();
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const isFirstQuestOfDay = user.streakStats.dailyQuestsCompletedToday === 0;
 
-                    if (lastQuestDate === yesterdayStart) {
-                        user.streakStats.currentStreak += 1;
-                    } else if (lastQuestDate !== today.getTime()) {
-                        user.streakStats.currentStreak = 1;
-                    }
-                }
+          if (isFirstQuestOfDay) {
+            const yesterday = new Date(today);
+            yesterday.setDate(yesterday.getDate() - 1);
+            const lastQuestDate = user.streakStats.lastQuestDate
+              ? new Date(user.streakStats.lastQuestDate).setHours(0, 0, 0, 0)
+              : null;
+            const yesterdayStart = yesterday.getTime();
 
-                user.streakStats.dailyQuestsCompletedToday += 1;
-                user.streakStats.totalQuestsCompleted += 1;
-                user.streakStats.totalPointsEarned += 1;
-                user.streakStats.lastQuestDate = new Date();
-                user.points = (user.points || 0) + 1;
-                user.dailyQuestProgress.isStreakMaintained = true;
-
-                if (user.streakStats.currentStreak > user.streakStats.longestStreak) {
-                    user.streakStats.longestStreak = user.streakStats.currentStreak;
-                }
-
-                await user.save();
-
-                // Check and award streak milestone rewards
-                const streakRewardService = require('../services/streakRewardService');
-                await streakRewardService.checkAndAwardStreakMilestones(user._id, user.streakStats.currentStreak);
-                console.log(`✅ Daily quest ${virtualQuestId} completed for user ${user._id} after participation approval`);
+            if (lastQuestDate === yesterdayStart) {
+              user.streakStats.currentStreak += 1;
+            } else if (lastQuestDate !== today.getTime()) {
+              user.streakStats.currentStreak = 1;
             }
+          }
+
+          user.streakStats.dailyQuestsCompletedToday += 1;
+          user.streakStats.totalQuestsCompleted += 1;
+          user.streakStats.totalPointsEarned += 1;
+          user.streakStats.lastQuestDate = new Date();
+          user.points = (user.points || 0) + 1;
+          user.dailyQuestProgress.isStreakMaintained = true;
+
+          if (user.streakStats.currentStreak > user.streakStats.longestStreak) {
+            user.streakStats.longestStreak = user.streakStats.currentStreak;
+          }
+
+          await user.save();
+
+          // Check and award streak milestone rewards
+          const streakRewardService = require('../services/streakRewardService');
+          await streakRewardService.checkAndAwardStreakMilestones(user._id, user.streakStats.currentStreak);
+          console.log(`✅ Daily quest ${virtualQuestId} completed for user ${user._id} after participation approval`);
         }
+      }
     } catch (error) {
-        console.error('⚠️ Error completing daily quest after participation approval:', error);
-        // Don't fail the approval if daily quest completion fails
+      console.error('⚠️ Error completing daily quest after participation approval:', error);
+      // Don't fail the approval if daily quest completion fails
     }
 
     // Deduct pointsReward from owner and give to participant (ทุกครั้งที่ approve)
@@ -553,12 +554,12 @@ router.post('/participations/:participationId/approve', auth, adminAuth, async (
       await User.findByIdAndUpdate(questOwnerId, {
         $inc: { points: -pointsReward }
       });
-      
+
       // Give to participant
       await User.findByIdAndUpdate(participation.participant, {
         $inc: { points: pointsReward }
       });
-      
+
       console.log(`💰 Deducted ${pointsReward} points from quest owner ${questOwnerId} and gave to participant ${participation.participant}`);
     }
 
@@ -582,10 +583,10 @@ router.post('/participations/:participationId/approve', auth, adminAuth, async (
       // Get owner's TikTok username (the person being followed)
       const owner = await User.findById(questOwnerId)
         .select('integrations.tiktok.username');
-      
+
       if (owner?.integrations?.tiktok?.username) {
         const ownerTiktokUsername = owner.integrations.tiktok.username.toLowerCase();
-        
+
         // Get participant to add owner's username to their approvedFollowers list
         const participant = await User.findById(participation.participant);
         if (participant) {
@@ -593,7 +594,7 @@ router.post('/participations/:participationId/approve', auth, adminAuth, async (
           const alreadyExists = participant.approvedFollowers?.some(
             f => f.tiktokUsername === ownerTiktokUsername
           );
-          
+
           if (!alreadyExists) {
             // Add to participant's approvedFollowers list
             if (!participant.approvedFollowers) {
@@ -710,7 +711,7 @@ router.get('/settings', auth, adminAuth, async (req, res) => {
       success: true,
       data: {
         settings: groupedSettings,
-        categories: ['points', 'quests', 'streak', 'social', 'system', 'job', 'reward']
+        categories: ['points', 'quests', 'streak', 'social', 'system', 'job', 'reward', 'delivery', 'coupon']
       }
     });
   } catch (error) {
@@ -734,27 +735,27 @@ router.put('/settings/:key', auth, adminAuth, async (req, res) => {
     // Try to find in QuestSettings first
     let setting = await QuestSettings.findOne({ key });
     let isStreakSetting = false;
-    
+
     // If not found, try StreakSettings
     if (!setting) {
       setting = await StreakSettings.findOne({ key });
       isStreakSetting = true;
     }
-    
+
     if (!setting) {
       return res.status(404).json({
         success: false,
         message: 'ไม่พบการตั้งค่านี้'
       });
     }
-    
+
     // Handle boolean values from QuestSettings
     if (!isStreakSetting && setting.valueType === 'boolean') {
       // Convert value to boolean if needed
       const boolValue = typeof value === 'boolean' ? value : value === 1 || value === 'true' || value === true;
       setting.value = boolValue;
       await setting.save();
-      
+
       return res.json({
         success: true,
         message: 'การตั้งค่าถูกบันทึกแล้ว',
@@ -793,7 +794,7 @@ router.put('/settings/:key', auth, adminAuth, async (req, res) => {
         { value, updatedAt: new Date() },
         { new: true }
       );
-      
+
       if (!updatedSetting) {
         return res.status(404).json({
           success: false,
@@ -1028,7 +1029,7 @@ router.post('/partner-registrations/:id/approve', auth, adminAuth, async (req, r
       let isUnique = false;
       let attempts = 0;
       const maxAttempts = 100;
-      
+
       while (!isUnique && attempts < maxAttempts) {
         code = 'PT' + Math.floor(10000 + Math.random() * 90000).toString();
         const existing = await Partner.findOne({ partnerCode: code });
@@ -1040,11 +1041,11 @@ router.post('/partner-registrations/:id/approve', auth, adminAuth, async (req, r
           console.log(`⚠️ PartnerCode ${code} already exists, trying again... (attempt ${attempts})`);
         }
       }
-      
+
       if (!isUnique) {
         throw new Error('Failed to generate unique partnerCode after maximum attempts');
       }
-      
+
       return code;
     };
 
@@ -1094,8 +1095,8 @@ router.post('/partner-registrations/:id/approve', auth, adminAuth, async (req, r
  */
 router.get('/partners', auth, adminAuth, async (req, res) => {
   try {
-    const partners = await Partner.find({ 
-      status: { $in: ['probation', 'approved'] } 
+    const partners = await Partner.find({
+      status: { $in: ['probation', 'approved'] }
     })
       .populate('userId', 'name email photo')
       .sort({ updatedAt: -1 })
@@ -1121,7 +1122,7 @@ router.get('/partners', auth, adminAuth, async (req, res) => {
 router.post('/partners/:id/approve-probation', auth, adminAuth, async (req, res) => {
   try {
     const partner = await Partner.findById(req.params.id);
-    
+
     if (!partner) {
       return res.status(404).json({
         success: false,
@@ -1171,7 +1172,7 @@ router.post('/partners/:id/approve-probation', auth, adminAuth, async (req, res)
 router.delete('/partners/:id', auth, adminAuth, async (req, res) => {
   try {
     const partner = await Partner.findById(req.params.id);
-    
+
     if (!partner) {
       return res.status(404).json({
         success: false,
@@ -1260,7 +1261,7 @@ router.post('/partner-registrations/:id/reject', auth, adminAuth, async (req, re
 router.get('/point-system', auth, adminAuth, async (req, res) => {
   try {
     const pointSystem = await PointSystem.getSystem();
-    
+
     // Get recent transactions
     const recentTransactions = await PointTransaction.find()
       .sort({ createdAt: -1 })
@@ -1454,7 +1455,7 @@ router.get('/point-system/transactions', auth, adminAuth, async (req, res) => {
 router.get('/cash-rewards', auth, adminAuth, async (req, res) => {
   try {
     const { status } = req.query;
-    
+
     let query = {};
     if (status) {
       query.status = status;
@@ -1485,7 +1486,7 @@ router.get('/cash-rewards', auth, adminAuth, async (req, res) => {
 router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const cashReward = await CashReward.findById(id);
     if (!cashReward) {
       return res.status(404).json({
@@ -1528,7 +1529,7 @@ router.post('/cash-rewards/:id/pay', auth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { adminNotes } = req.body;
-    
+
     const cashReward = await CashReward.findById(id);
     if (!cashReward) {
       return res.status(404).json({
@@ -1576,7 +1577,7 @@ router.post('/cash-rewards/:id/reject', auth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
-    
+
     const cashReward = await CashReward.findById(id);
     if (!cashReward) {
       return res.status(404).json({
@@ -1646,7 +1647,7 @@ router.post('/cash-rewards/:id/reject', auth, adminAuth, async (req, res) => {
 router.get('/rewards', auth, adminAuth, async (req, res) => {
   try {
     const rewards = await Reward.find({}).sort({ order: 1, createdAt: -1 });
-    
+
     res.json({
       success: true,
       data: rewards
@@ -1715,6 +1716,127 @@ router.put('/rewards/:rewardId', auth, adminAuth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * GET /api/v2/admin/riders
+ * Get all riders with filtering (admin only)
+ */
+router.get('/riders', auth, adminAuth, async (req, res) => {
+  try {
+    const { status, page = 1, limit = 20, search } = req.query;
+    const query = {};
+
+    if (status) {
+      query.status = status;
+    }
+
+    if (search) {
+      query.$or = [
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { idCardNumber: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+        { riderCode: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const riders = await Rider.find(query)
+      .populate('user', 'name email phone')
+      .populate('adminApproval.reviewedBy', 'name email')
+      .sort({ submittedAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
+
+    const total = await Rider.countDocuments(query);
+
+    // Get statistics
+    const stats = {
+      pending: await Rider.countDocuments({ status: 'pending' }),
+      active: await Rider.countDocuments({ status: 'active' }),
+      suspended: await Rider.countDocuments({ status: 'suspended' }),
+      rejected: await Rider.countDocuments({ status: 'rejected' })
+    };
+
+    res.json({
+      success: true,
+      data: riders,
+      count: riders.length,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / parseInt(limit)),
+      stats
+    });
+  } catch (error) {
+    console.error('❌ Error getting riders:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/v2/admin/riders/:riderId
+ * Get rider details with images (admin only)
+ */
+router.get('/riders/:riderId', auth, adminAuth, async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const { getSignedUrl } = require('../utils/gcpStorage');
+
+    const rider = await Rider.findById(riderId)
+      .populate('user', 'name email phone')
+      .populate('adminApproval.reviewedBy', 'name email')
+      .lean();
+
+    if (!rider) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบข้อมูล Rider'
+      });
+    }
+
+    // Generate signed URLs for images
+    let idCardImageUrl = rider.idCardImage;
+    let driverLicenseImageUrl = rider.driverLicenseImage;
+
+    if (rider.idCardImage) {
+      try {
+        idCardImageUrl = await getSignedUrl(rider.idCardImage);
+      } catch (error) {
+        console.error('Error generating signed URL for idCard:', error);
+      }
+    }
+
+    if (rider.driverLicenseImage) {
+      try {
+        driverLicenseImageUrl = await getSignedUrl(rider.driverLicenseImage);
+      } catch (error) {
+        console.error('Error generating signed URL for driverLicense:', error);
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        ...rider,
+        idCardImage: idCardImageUrl,
+        driverLicenseImage: driverLicenseImageUrl
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error getting rider details:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
     });
   }
 });

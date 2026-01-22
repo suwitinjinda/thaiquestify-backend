@@ -37,6 +37,10 @@ const userQuestSchema = new mongoose.Schema({
     type: Map,
     of: mongoose.Schema.Types.Mixed
   },
+  submissionData: {
+    type: Map,
+    of: mongoose.Schema.Types.Mixed
+  },
   joinedAt: {
     type: Date,
     default: Date.now

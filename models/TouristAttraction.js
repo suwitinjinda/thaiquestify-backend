@@ -68,10 +68,44 @@ const touristAttractionSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  // Photo submissions (3 photos required)
+  photos: [{
+    type: String, // GCP bucket URLs
+    required: false
+  }],
   isActive: {
     type: Boolean,
-    default: true,
+    default: false, // New submissions are inactive until approved
     index: true
+  },
+  // Submission workflow fields
+  status: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected', 'active'],
+    default: 'pending',
+    index: true
+  },
+  submittedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  submittedAt: {
+    type: Date,
+    default: null
+  },
+  approvedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  approvedAt: {
+    type: Date,
+    default: null
+  },
+  rejectionReason: {
+    type: String,
+    default: null
   },
   coordinateSource: {
     type: String,
@@ -136,5 +170,7 @@ touristAttractionSchema.index({ province: 1, isActive: 1 });
 touristAttractionSchema.index({ category: 1, isActive: 1 }); // Keep for backward compatibility
 touristAttractionSchema.index({ categories: 1, isActive: 1 }); // Index for categories array
 touristAttractionSchema.index({ 'coordinates.latitude': 1, 'coordinates.longitude': 1 });
+touristAttractionSchema.index({ status: 1, submittedAt: -1 }); // For admin pending submissions
+touristAttractionSchema.index({ submittedBy: 1, status: 1 }); // For partner's submissions
 
 module.exports = mongoose.model('TouristAttraction', touristAttractionSchema);

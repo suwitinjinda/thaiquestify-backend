@@ -30,6 +30,12 @@ const foodMenuItemSchema = new mongoose.Schema({
     type: String,
     default: '',
   },
+  type: {
+    type: String,
+    enum: ['food', 'dessert', 'drink', 'other'],
+    default: 'food',
+    index: true,
+  },
   isAvailable: {
     type: Boolean,
     default: true,

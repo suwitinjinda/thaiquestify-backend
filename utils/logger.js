@@ -216,7 +216,23 @@ class Logger {
       ...metadata
     };
     
-    const level = res.statusCode >= 400 ? 'error' : res.statusCode >= 300 ? 'warn' : 'info';
+    // Check if this is an expected error (not a real error)
+    // For participate endpoints, 400 errors are usually expected (already participating/completed)
+    const isParticipateEndpoint = req.path.includes('/participate');
+    const isExpectedError = isParticipateEndpoint && res.statusCode === 400;
+    
+    // Don't log expected errors as errors
+    let level;
+    if (isExpectedError) {
+      level = 'info'; // Log expected participate 400 errors as info (not errors)
+    } else if (res.statusCode >= 400) {
+      level = 'error';
+    } else if (res.statusCode >= 300) {
+      level = 'warn';
+    } else {
+      level = 'info';
+    }
+    
     this[level](`API Response: ${req.method} ${req.path} - ${res.statusCode}`, apiMetadata);
   }
 

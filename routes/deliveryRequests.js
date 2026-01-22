@@ -183,7 +183,8 @@ router.post('/', auth, async (req, res) => {
       notes: notes || '',
       contactPhone: contactPhone || shop.phone,
       preferredDeliveryTime: preferredDeliveryTime ? new Date(preferredDeliveryTime) : null,
-      expiresAt: new Date(Date.now() + 30 * 60 * 1000), // 30 minutes
+      // expiresAt will be set by deliveryAssignmentService based on admin setting (delivery_assignment_timeout)
+      // Don't set default here to avoid overriding the timeout value from admin settings
     });
 
     await deliveryRequest.save();
@@ -241,6 +242,21 @@ router.post('/:id/accept', auth, async (req, res) => {
     if (request.expiresAt && request.expiresAt < new Date()) {
       request.status = 'expired';
       await request.save();
+      
+      // Cancel the associated order if not already cancelled
+      if (request.order) {
+        const order = await Order.findById(request.order);
+        if (order && !['completed', 'cancelled'].includes(order.status)) {
+          order.status = 'cancelled';
+          order.cancelledBy = 'system';
+          order.notes = order.notes 
+            ? `${order.notes}\n[Auto-cancelled: Delivery request expired]` 
+            : '[Auto-cancelled: Delivery request expired]';
+          await order.save();
+          console.log(`✅ Cancelled order ${order.orderNumber || order._id} - delivery request expired`);
+        }
+      }
+      
       return res.status(400).json({
         success: false,
         message: 'คำขอส่งนี้หมดอายุแล้ว',
@@ -354,20 +370,23 @@ router.put('/:id/cancel', auth, async (req, res) => {
     request.status = 'cancelled';
     await request.save();
 
-    // If delivery exists, cancel it too
+    // Cancel related order and delivery
     if (request.order) {
       const order = await Order.findById(request.order);
+      if (order && !['completed', 'cancelled'].includes(order.status)) {
+        order.status = 'cancelled';
+        await order.save();
+        console.log(`✅ Cancelled order ${order._id} due to delivery request cancellation`);
+      }
+
+      // Cancel delivery if exists
       if (order.delivery) {
         const delivery = await Delivery.findById(order.delivery);
-        if (delivery && delivery.status !== 'delivered') {
+        if (delivery && !['delivered', 'cancelled'].includes(delivery.status)) {
           delivery.status = 'cancelled';
           await delivery.save();
+          console.log(`✅ Cancelled delivery ${delivery._id} due to delivery request cancellation`);
         }
-      }
-      // Update order status
-      if (order.status === 'delivering') {
-        order.status = 'confirmed';
-        await order.save();
       }
     }
 

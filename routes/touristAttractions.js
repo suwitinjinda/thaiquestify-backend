@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const TouristAttraction = require('../models/TouristAttraction');
+const { auth } = require('../middleware/auth');
 
 /**
  * GET /api/tourist-attractions
@@ -10,8 +11,15 @@ router.get('/', async (req, res) => {
   try {
     const { province, category, search } = req.query;
 
-    // Build query
-    const query = { isActive: true };
+    // Build query - only show approved and active attractions
+    const query = { 
+      isActive: true,
+      $or: [
+        { status: 'active' },
+        { status: 'approved' },
+        { status: { $exists: false } } // Backward compatibility for old records
+      ]
+    };
 
     if (province) {
       query.province = province;
@@ -541,6 +549,502 @@ router.post('/:id/force-update-coordinates', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'เกิดข้อผิดพลาดในการอัปเดตพิกัด',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/tourist-attractions/upload-images
+ * Upload images for tourist attraction submission (partner only)
+ */
+router.post('/upload-images', auth, async (req, res) => {
+  try {
+    // Check if user is a partner
+    if (!req.user.partnerId && req.user.userType !== 'partner') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Partners only.'
+      });
+    }
+
+    const { images } = req.body; // Array of { data: base64String, mimeType: string }
+
+    if (!Array.isArray(images) || images.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No images provided'
+      });
+    }
+
+    if (images.length > 3) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum 3 images allowed'
+      });
+    }
+
+    try {
+      const { uploadTouristAttractionImages } = require('../utils/gcpStorage');
+      const imageBuffers = [];
+
+      for (const img of images) {
+        if (!img.data || typeof img.data !== 'string') {
+          console.warn('⚠️ Skipping invalid image data');
+          continue;
+        }
+
+        imageBuffers.push({
+          buffer: Buffer.from(img.data, 'base64'),
+          mimeType: img.mimeType || 'image/jpeg',
+        });
+      }
+
+      if (imageBuffers.length > 0) {
+        const userId = req.user.id || req.user._id;
+        const uploadedUrls = await uploadTouristAttractionImages(imageBuffers, userId);
+        console.log(`✅ Uploaded ${uploadedUrls.length} images to GCP for tourist attraction submission`);
+
+        // Convert to signed URLs for frontend access
+        const { getSignedUrls } = require('../utils/gcpStorage');
+        const signedUrls = await getSignedUrls(uploadedUrls);
+
+        res.json({
+          success: true,
+          urls: signedUrls,
+          count: signedUrls.length,
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          message: 'No valid images to upload',
+        });
+      }
+    } catch (uploadError) {
+      console.error('❌ Error uploading images to GCP:', uploadError);
+      res.status(500).json({
+        success: false,
+        message: 'Error uploading images to GCP',
+        error: uploadError.message,
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error in upload-images endpoint:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error processing image upload request',
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * POST /api/tourist-attractions/submit
+ * Submit a new tourist attraction for approval (partner only)
+ */
+router.post('/submit', auth, async (req, res) => {
+  try {
+    // Check if user is a partner
+    if (!req.user.partnerId && req.user.userType !== 'partner') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Partners only.'
+      });
+    }
+
+    const {
+      name,
+      nameEn,
+      description,
+      coordinates, // { latitude, longitude }
+      province,
+      district,
+      address,
+      category, // single category for backward compatibility
+      categories, // array of categories
+      checkInRadius,
+      photos, // Array of 3 photo URLs
+      michelinRating,
+      michelinStars
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !coordinates || !coordinates.latitude || !coordinates.longitude || !province) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: name, coordinates (latitude, longitude), province'
+      });
+    }
+
+    if (!photos || !Array.isArray(photos) || photos.length < 3) {
+      return res.status(400).json({
+        success: false,
+        message: 'Exactly 3 photos are required'
+      });
+    }
+
+    // Check for duplicates (nearby places with similar names)
+    const duplicateCheck = await TouristAttraction.findOne({
+      name: { $regex: new RegExp(name, 'i') },
+      'coordinates.latitude': {
+        $gte: coordinates.latitude - 0.01, // ~1km radius
+        $lte: coordinates.latitude + 0.01
+      },
+      'coordinates.longitude': {
+        $gte: coordinates.longitude - 0.01,
+        $lte: coordinates.longitude + 0.01
+      },
+      status: { $ne: 'rejected' } // Don't count rejected as duplicates
+    });
+
+    if (duplicateCheck) {
+      return res.status(400).json({
+        success: false,
+        message: 'A similar place already exists nearby. Please verify this is a new location.',
+        duplicate: {
+          id: duplicateCheck._id,
+          name: duplicateCheck.name,
+          distance: 'nearby'
+        }
+      });
+    }
+
+    // Generate unique ID
+    const uniqueId = `TA-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    // Determine categories
+    let finalCategories = ['other'];
+    if (categories && Array.isArray(categories) && categories.length > 0) {
+      finalCategories = categories;
+    } else if (category) {
+      finalCategories = [category];
+    }
+
+    // Create new tourist attraction with pending status
+    const newAttraction = new TouristAttraction({
+      id: uniqueId,
+      name,
+      nameEn: nameEn || '',
+      description: description || '',
+      coordinates: {
+        latitude: coordinates.latitude,
+        longitude: coordinates.longitude
+      },
+      province,
+      district: district || '',
+      address: address || '',
+      category: finalCategories[0], // For backward compatibility
+      categories: finalCategories,
+      checkInRadius: checkInRadius || 100,
+      photos: photos.slice(0, 3), // Ensure only 3 photos
+      thumbnail: photos[0], // First photo as thumbnail
+      isActive: false, // Inactive until approved
+      status: 'pending',
+      submittedBy: req.user.id || req.user._id,
+      submittedAt: new Date(),
+      coordinateSource: 'manual',
+      michelinRating: michelinRating || null,
+      michelinStars: michelinStars || null
+    });
+
+    await newAttraction.save();
+
+    res.json({
+      success: true,
+      message: 'Tourist attraction submitted successfully. Waiting for admin approval.',
+      data: newAttraction
+    });
+  } catch (error) {
+    console.error('❌ Error submitting tourist attraction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error submitting tourist attraction',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/tourist-attractions/pending
+ * Get all pending submissions (admin only)
+ */
+router.get('/pending', auth, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Admin only.'
+      });
+    }
+
+    const pendingAttractions = await TouristAttraction.find({ status: 'pending' })
+      .populate('submittedBy', 'name email')
+      .sort({ submittedAt: -1 });
+
+    res.json({
+      success: true,
+      data: pendingAttractions,
+      count: pendingAttractions.length
+    });
+  } catch (error) {
+    console.error('❌ Error fetching pending attractions:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching pending attractions',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * PATCH /api/tourist-attractions/:id/approve
+ * Approve a pending tourist attraction (admin only)
+ */
+router.patch('/:id/approve', auth, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Admin only.'
+      });
+    }
+
+    const attraction = await TouristAttraction.findById(req.params.id);
+
+    if (!attraction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Tourist attraction not found'
+      });
+    }
+
+    if (attraction.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot approve. Current status: ${attraction.status}`
+      });
+    }
+
+    // Approve the attraction
+    attraction.status = 'approved';
+    attraction.isActive = true;
+    attraction.approvedBy = req.user.id || req.user._id;
+    attraction.approvedAt = new Date();
+
+    await attraction.save();
+
+    res.json({
+      success: true,
+      message: 'Tourist attraction approved successfully',
+      data: attraction
+    });
+  } catch (error) {
+    console.error('❌ Error approving tourist attraction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error approving tourist attraction',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * PATCH /api/tourist-attractions/:id/reject
+ * Reject a pending tourist attraction (admin only)
+ */
+router.patch('/:id/reject', auth, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Admin only.'
+      });
+    }
+
+    const { reason } = req.body;
+
+    if (!reason || reason.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rejection reason is required'
+      });
+    }
+
+    const attraction = await TouristAttraction.findById(req.params.id);
+
+    if (!attraction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Tourist attraction not found'
+      });
+    }
+
+    if (attraction.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot reject. Current status: ${attraction.status}`
+      });
+    }
+
+    // Reject the attraction
+    attraction.status = 'rejected';
+    attraction.isActive = false;
+    attraction.rejectionReason = reason.trim();
+
+    await attraction.save();
+
+    // TODO: Send notification to partner about rejection
+
+    res.json({
+      success: true,
+      message: 'Tourist attraction rejected',
+      data: attraction
+    });
+  } catch (error) {
+    console.error('❌ Error rejecting tourist attraction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error rejecting tourist attraction',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/tourist-attractions/my-submissions
+ * Get partner's own submissions (partner only)
+ */
+router.get('/my-submissions', auth, async (req, res) => {
+  try {
+    // Check if user is a partner
+    if (!req.user.partnerId && req.user.userType !== 'partner') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Partners only.'
+      });
+    }
+
+    const submissions = await TouristAttraction.find({
+      submittedBy: req.user.id || req.user._id
+    })
+      .sort({ submittedAt: -1 });
+
+    res.json({
+      success: true,
+      data: submissions,
+      count: submissions.length
+    });
+  } catch (error) {
+    console.error('❌ Error fetching my submissions:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching submissions',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * PATCH /api/tourist-attractions/:id/resubmit
+ * Edit and resubmit a rejected tourist attraction (partner only)
+ */
+router.patch('/:id/resubmit', auth, async (req, res) => {
+  try {
+    // Check if user is a partner
+    if (!req.user.partnerId && req.user.userType !== 'partner') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Partners only.'
+      });
+    }
+
+    const attraction = await TouristAttraction.findById(req.params.id);
+
+    if (!attraction) {
+      return res.status(404).json({
+        success: false,
+        message: 'Tourist attraction not found'
+      });
+    }
+
+    // Check ownership
+    const submittedById = attraction.submittedBy?.toString() || attraction.submittedBy;
+    const userId = (req.user.id || req.user._id).toString();
+    if (submittedById !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. You can only edit your own submissions.'
+      });
+    }
+
+    if (attraction.status !== 'rejected') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot resubmit. Current status: ${attraction.status}`
+      });
+    }
+
+    // Update fields from request body
+    const {
+      name,
+      nameEn,
+      description,
+      coordinates,
+      province,
+      district,
+      address,
+      categories,
+      checkInRadius,
+      photos,
+      michelinRating,
+      michelinStars
+    } = req.body;
+
+    if (name) attraction.name = name;
+    if (nameEn !== undefined) attraction.nameEn = nameEn;
+    if (description !== undefined) attraction.description = description;
+    if (coordinates) {
+      attraction.coordinates = {
+        latitude: coordinates.latitude,
+        longitude: coordinates.longitude
+      };
+    }
+    if (province) attraction.province = province;
+    if (district !== undefined) attraction.district = district;
+    if (address !== undefined) attraction.address = address;
+    if (categories && Array.isArray(categories)) {
+      attraction.categories = categories;
+      attraction.category = categories[0]; // Backward compatibility
+    }
+    if (checkInRadius) attraction.checkInRadius = checkInRadius;
+    if (photos && Array.isArray(photos) && photos.length >= 3) {
+      attraction.photos = photos.slice(0, 3);
+      attraction.thumbnail = photos[0];
+    }
+    if (michelinRating !== undefined) attraction.michelinRating = michelinRating;
+    if (michelinStars !== undefined) attraction.michelinStars = michelinStars;
+
+    // Reset status to pending
+    attraction.status = 'pending';
+    attraction.isActive = false;
+    attraction.submittedAt = new Date();
+    attraction.rejectionReason = null; // Clear rejection reason
+
+    await attraction.save();
+
+    res.json({
+      success: true,
+      message: 'Tourist attraction resubmitted successfully',
+      data: attraction
+    });
+  } catch (error) {
+    console.error('❌ Error resubmitting tourist attraction:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error resubmitting tourist attraction',
       error: error.message
     });
   }

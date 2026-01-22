@@ -58,6 +58,9 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Static file serving for uploads
+app.use('/uploads', express.static('uploads'));
+
 // Logging Middleware (for audit logs)
 const { requestLogger, errorLogger } = require('./middleware/loggingMiddleware');
 app.use(requestLogger);
@@ -210,6 +213,10 @@ app.use('/api/v2/users', usersRoutes);
 const rewardsRoutes = require('./routes/rewards');
 app.use('/api/v2/rewards', rewardsRoutes);
 
+// Coupons Routes
+const couponsRoutes = require('./routes/coupons');
+app.use('/api/coupons', couponsRoutes);
+
 // Wallet Routes
 const walletRoutes = require('./routes/wallet');
 app.use('/api/v2/wallet', walletRoutes);
@@ -233,6 +240,10 @@ app.use('/api/shop-requests', shopRequestsRoutes);
 // Shop Routes
 const shopRoutes = require('./routes/shops');
 app.use('/api/shop', shopRoutes);
+
+// Shop Quests Routes
+const shopQuestsRoutes = require('./routes/shopQuests');
+app.use('/api/shop/quests', shopQuestsRoutes);
 
 // Tourist Attractions Routes
 const touristAttractionsRoutes = require('./routes/touristAttractions');
@@ -1156,6 +1167,156 @@ app.use(errorLogger);
 
 // ===========================================
 // 8. START SERVER
+// ===========================================
+
+// ===========================================
+// 9. SCHEDULED TASKS (Cron Jobs)
+// ===========================================
+
+// Auto-cancel orders without rider after 1 day
+const orderCancellationService = require('./services/orderCancellationService');
+
+// Use croner for scheduled tasks
+let Cron;
+try {
+  Cron = require('croner');
+  console.log('✅ Croner loaded successfully');
+} catch (error) {
+  console.warn('⚠️ Croner not available, using setInterval fallback');
+  Cron = null;
+}
+
+// Run every day at 00:01 AM (1 minute after midnight)
+// This will cancel orders created yesterday that have no rider
+function setupOrderCancellationCron() {
+  if (Cron) {
+    // Use croner for precise scheduling
+    const job = Cron('1 0 * * *', async () => {
+      console.log('🔄 Running scheduled order cancellation (daily at 00:01 AM)...');
+      try {
+        await orderCancellationService.cancelAgingOrders();
+      } catch (error) {
+        console.error('❌ Error in scheduled order cancellation:', error);
+      }
+    });
+    console.log('⏰ Order cancellation cron scheduled: Daily at 00:01 AM');
+  } else {
+    // Fallback to setInterval
+    console.log('⏰ Using setInterval fallback for order cancellation');
+    
+    // Calculate milliseconds until next midnight + 1 minute
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 1, 0, 0); // 00:01 AM
+    
+    const msUntilMidnight = tomorrow.getTime() - now.getTime();
+    
+    console.log(`   Next run: ${tomorrow.toISOString()} (in ${Math.round(msUntilMidnight / 1000 / 60)} minutes)`);
+    
+    // Run after calculated delay, then every 24 hours
+    setTimeout(async () => {
+      console.log('🔄 Running scheduled order cancellation (daily at 00:01 AM)...');
+      try {
+        await orderCancellationService.cancelAgingOrders();
+      } catch (error) {
+        console.error('❌ Error in scheduled order cancellation:', error);
+      }
+      
+      // Then schedule to run every 24 hours
+      setInterval(async () => {
+        console.log('🔄 Running scheduled order cancellation (daily at 00:01 AM)...');
+        try {
+          await orderCancellationService.cancelAgingOrders();
+        } catch (error) {
+          console.error('❌ Error in scheduled order cancellation:', error);
+        }
+      }, 24 * 60 * 60 * 1000); // Every 24 hours
+    }, msUntilMidnight);
+  }
+  
+  // Run immediately on startup (for testing/debugging)
+  setTimeout(async () => {
+    console.log('🔄 Running initial order cancellation check...');
+    try {
+      await orderCancellationService.cancelAgingOrders();
+    } catch (error) {
+      console.error('❌ Error in initial order cancellation:', error);
+    }
+  }, 5000); // Run 5 seconds after startup
+}
+
+// Setup cron job
+setupOrderCancellationCron();
+
+// ===========================================
+// 9.1. SETUP DELIVERY REQUEST TIMEOUT CHECK
+// ===========================================
+// Check every minute for delivery requests that have been pending for more than 10 minutes
+// and cancel them automatically
+function setupDeliveryRequestTimeoutCheck() {
+  const deliveryAssignmentService = require('./services/deliveryAssignmentService');
+  
+  // Run immediately on startup (after 10 seconds to let server initialize)
+  setTimeout(async () => {
+    console.log('🔄 Running initial delivery request timeout check...');
+    try {
+      await deliveryAssignmentService.checkAndCancelOldPendingRequests();
+    } catch (error) {
+      console.error('❌ Error in initial delivery request timeout check:', error);
+    }
+  }, 10000); // Run 10 seconds after startup
+  
+  // Then run every minute
+  setInterval(async () => {
+    try {
+      await deliveryAssignmentService.checkAndCancelOldPendingRequests();
+    } catch (error) {
+      console.error('❌ Error in delivery request timeout check:', error);
+    }
+  }, 60 * 1000); // Every 1 minute
+  
+  console.log('⏰ Delivery request timeout check scheduled: Every 1 minute');
+}
+
+// Setup delivery request timeout check
+setupDeliveryRequestTimeoutCheck();
+
+// ===========================================
+// 9.2. SETUP CLEANUP FOR CANCELLED REQUESTS
+// ===========================================
+// Check for delivery requests that are cancelled/expired but order is not cancelled
+// This ensures consistency - if request is cancelled/expired, order should be cancelled too
+function setupCancelledRequestsCleanup() {
+  const deliveryAssignmentService = require('./services/deliveryAssignmentService');
+  
+  // Run immediately on startup (after 15 seconds to let server initialize)
+  setTimeout(async () => {
+    console.log('🔄 Running initial cancelled requests cleanup check...');
+    try {
+      await deliveryAssignmentService.checkAndCancelOrdersForCancelledRequests();
+    } catch (error) {
+      console.error('❌ Error in initial cancelled requests cleanup:', error);
+    }
+  }, 15000); // Run 15 seconds after startup
+  
+  // Then run every 5 minutes
+  setInterval(async () => {
+    try {
+      await deliveryAssignmentService.checkAndCancelOrdersForCancelledRequests();
+    } catch (error) {
+      console.error('❌ Error in cancelled requests cleanup:', error);
+    }
+  }, 5 * 60 * 1000); // Every 5 minutes
+  
+  console.log('⏰ Cancelled requests cleanup scheduled: Every 5 minutes');
+}
+
+// Setup cancelled requests cleanup
+setupCancelledRequestsCleanup();
+
+// ===========================================
+// 10. START SERVER
 // ===========================================
 
 const PORT = process.env.PORT || 5000;

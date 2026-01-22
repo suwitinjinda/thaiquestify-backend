@@ -90,6 +90,17 @@ const userSchema = new mongoose.Schema({
   address: { type: String, default: '' },
   district: { type: String, default: '' },
   province: { type: String, default: '' },
+  
+  // Shipping address for delivery orders
+  shippingAddress: {
+    address: { type: String, default: '' },
+    district: { type: String, default: '' },
+    province: { type: String, default: '' },
+    coordinates: {
+      latitude: { type: Number, default: null },
+      longitude: { type: Number, default: null }
+    }
+  },
 
   // Bank account information
   bankAccount: {
@@ -97,6 +108,17 @@ const userSchema = new mongoose.Schema({
     accountNumber: { type: String, default: '' },
     bankName: { type: String, default: '' },
     bankBranch: { type: String, default: '' }
+  },
+
+  // Push notification token (for Expo Push Notifications)
+  notificationToken: {
+    type: String,
+    default: null,
+    index: true
+  },
+  notificationTokenUpdatedAt: {
+    type: Date,
+    default: null
   },
 
   // GPS coordinates (for location-based features)
@@ -197,6 +219,13 @@ const userSchema = new mongoose.Schema({
       default: 0,
       min: 0
     }
+  },
+
+  // Shop Check-in Statistics (จำนวนครั้งที่ check-in ต่อ shop)
+  shopCheckInStats: {
+    type: Map,
+    of: Number,
+    default: new Map()
   },
 
   // *** NEW: Job Hiring Statistics ***

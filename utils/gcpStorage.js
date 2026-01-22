@@ -104,6 +104,29 @@ async function uploadShopImages(images, shopId) {
 }
 
 /**
+ * Upload multiple images for tourist attraction submission (up to 3)
+ * @param {Array<{buffer: Buffer, mimeType: String}>} images - Array of image objects
+ * @param {String} userId - User ID for folder structure
+ * @returns {Promise<Array<String>>} Array of public URLs
+ */
+async function uploadTouristAttractionImages(images, userId) {
+  try {
+    const uploadPromises = images.map((image, index) => {
+      const fileName = `tourist-attractions/submissions/${userId}/image_${index + 1}_${Date.now()}.${getFileExtension(image.mimeType)}`;
+      return uploadImage(image.buffer, fileName, image.mimeType);
+    });
+
+    const urls = await Promise.all(uploadPromises);
+    console.log(`✅ Uploaded ${urls.length} images for tourist attraction submission by user ${userId}`);
+    
+    return urls;
+  } catch (error) {
+    console.error('❌ Error uploading tourist attraction images:', error);
+    throw error;
+  }
+}
+
+/**
  * Get file extension from MIME type
  */
 function getFileExtension(mimeType) {
@@ -223,6 +246,7 @@ async function deleteImage(fileUrl) {
 module.exports = {
   uploadImage,
   uploadShopImages,
+  uploadTouristAttractionImages,
   deleteImage,
   getSignedUrl,
   getSignedUrls,

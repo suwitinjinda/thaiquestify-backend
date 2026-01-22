@@ -72,36 +72,11 @@ const riderSchema = new mongoose.Schema({
   // Approval Status
   status: {
     type: String,
-    enum: ['pending', 'partner_approved', 'admin_approved', 'rejected', 'active'],
+    enum: ['pending', 'approved', 'rejected', 'active', 'suspended'],
     default: 'pending'
   },
 
-  // Approval Process
-  partnerApproval: {
-    partnerId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Partner',
-      default: null
-    },
-    approvedAt: {
-      type: Date,
-      default: null
-    },
-    rejectedAt: {
-      type: Date,
-      default: null
-    },
-    rejectionReason: {
-      type: String,
-      default: null
-    },
-    reviewedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      default: null
-    }
-  },
-
+  // Admin Approval Process (only admin can approve)
   adminApproval: {
     approvedAt: {
       type: Date,
@@ -111,7 +86,15 @@ const riderSchema = new mongoose.Schema({
       type: Date,
       default: null
     },
+    suspendedAt: {
+      type: Date,
+      default: null
+    },
     rejectionReason: {
+      type: String,
+      default: null
+    },
+    suspensionReason: {
       type: String,
       default: null
     },
@@ -127,6 +110,22 @@ const riderSchema = new mongoose.Schema({
     type: String,
     unique: true,
     sparse: true,
+    default: null
+  },
+
+  // Service Availability
+  isAvailable: {
+    type: Boolean,
+    default: false // Rider must manually turn on availability
+  },
+  serviceRadius: {
+    type: Number,
+    default: 5, // Default 5 km radius
+    min: 1,
+    max: 50
+  },
+  lastLocationUpdate: {
+    type: Date,
     default: null
   },
 
@@ -151,7 +150,6 @@ const riderSchema = new mongoose.Schema({
 riderSchema.index({ user: 1 });
 riderSchema.index({ status: 1 });
 riderSchema.index({ riderCode: 1 });
-riderSchema.index({ 'partnerApproval.partnerId': 1 });
 
 // Generate unique rider code
 riderSchema.methods.generateRiderCode = function () {

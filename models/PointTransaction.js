@@ -9,7 +9,7 @@ const pointTransactionSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: ['claim', 'refund', 'adjustment', 'new_user', 'tourist_quest', 'admin_adjustment', 'streak_milestone', 'job_application_fee', 'job_commission_fee', 'reward'],
+    enum: ['claim', 'refund', 'adjustment', 'new_user', 'tourist_quest', 'admin_adjustment', 'streak_milestone', 'job_application_fee', 'job_commission_fee', 'reward', 'deduction', 'order_delivery'],
     index: true
   },
   
@@ -38,6 +38,26 @@ const pointTransactionSchema = new mongoose.Schema({
   touristQuestId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'TouristQuest'
+  },
+  
+  // Related ID (for coupon, order, or other entities)
+  relatedId: {
+    type: mongoose.Schema.Types.ObjectId,
+    refPath: 'relatedModel',
+    default: null
+  },
+  
+  // Related model name (Coupon, Order, etc.)
+  relatedModel: {
+    type: String,
+    enum: ['Coupon', 'Order', 'Delivery', null],
+    default: null
+  },
+  
+  // Remaining points after transaction
+  remainingPoints: {
+    type: Number,
+    default: null
   },
   
   // Description/notes

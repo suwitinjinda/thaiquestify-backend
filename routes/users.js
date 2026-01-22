@@ -4,6 +4,7 @@ const router = express.Router();
 const User = require('../models/User');
 const Shop = require('../models/Shop'); // ADD THIS IMPORT
 const PointTransaction = require('../models/PointTransaction');
+const QuestSettings = require('../models/QuestSettings');
 const { auth } = require('../middleware/auth');
 
 // Get all users (Admin only)
@@ -46,6 +47,7 @@ router.get('/me', auth, async (req, res) => {
         district: user.district || '',
         province: user.province || '',
         coordinates: user.coordinates || null,
+        shippingAddress: user.shippingAddress || null,
         bankAccount: user.bankAccount || null,
         userType: user.userType,
         points: user.points || 0,
@@ -156,6 +158,7 @@ router.put('/me', auth, async (req, res) => {
         district: user.district,
         province: user.province,
         coordinates: user.coordinates,
+        shippingAddress: user.shippingAddress,
         bankAccount: user.bankAccount,
         userType: user.userType,
         updatedAt: user.updatedAt
@@ -287,6 +290,105 @@ router.get('/public/all', async (req, res) => {
       success: false,
       message: 'Failed to fetch users',
       error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/users/settings/public
+ * Get public settings that users can access (no auth required)
+ */
+router.get('/settings/public', async (req, res) => {
+  try {
+    const publicSettings = [
+      'point_to_baht_rate',
+      'shop_checkin_points',
+      'daily_checkin_points',
+      'coupon_expiry_days',
+      'daily_quest_50_points_enabled',
+      'daily_quest_50_points_cost',
+      'daily_quest_50_points_discount',
+      'daily_quest_100_points_enabled',
+      'daily_quest_100_points_cost',
+      'daily_quest_100_points_discount',
+      'coupon_min_amount_5',
+      'coupon_min_amount_10',
+      'coupon_min_amount_15',
+      'coupon_min_amount_20'
+    ];
+
+    const settings = await QuestSettings.find({
+      key: { $in: publicSettings },
+      isActive: true
+    }).lean();
+
+    const settingsMap = {};
+    settings.forEach(setting => {
+      settingsMap[setting.key] = setting.value;
+    });
+
+    // Helper to get number value or fallback (handles 0 as valid value)
+    const getNumberValue = (key, fallback) => {
+      const value = settingsMap[key];
+      if (value === null || value === undefined) return fallback;
+      const numValue = typeof value === 'string' ? parseFloat(value) : Number(value);
+      return isNaN(numValue) ? fallback : numValue;
+    };
+
+    // Helper to get boolean value or fallback
+    const getBooleanValue = (key, fallback) => {
+      const value = settingsMap[key];
+      if (value === null || value === undefined) return fallback;
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'string') {
+        return value.toLowerCase() === 'true' || value === '1';
+      }
+      return Boolean(value);
+    };
+
+    const dailyCheckInPoints = getNumberValue('daily_checkin_points', null);
+    const shopCheckInPoints = getNumberValue('shop_checkin_points', null);
+
+    res.json({
+      success: true,
+      data: {
+        point_to_baht_rate: getNumberValue('point_to_baht_rate', 1),
+        shop_checkin_points: shopCheckInPoints !== null ? shopCheckInPoints : (dailyCheckInPoints !== null ? dailyCheckInPoints : 10),
+        daily_checkin_points: dailyCheckInPoints !== null ? dailyCheckInPoints : (shopCheckInPoints !== null ? shopCheckInPoints : 10),
+        coupon_expiry_days: getNumberValue('coupon_expiry_days', 1),
+        daily_quest_50_points_enabled: getBooleanValue('daily_quest_50_points_enabled', true),
+        daily_quest_50_points_cost: getNumberValue('daily_quest_50_points_cost', 50),
+        daily_quest_50_points_discount: getNumberValue('daily_quest_50_points_discount', 5),
+        daily_quest_100_points_enabled: getBooleanValue('daily_quest_100_points_enabled', true),
+        daily_quest_100_points_cost: getNumberValue('daily_quest_100_points_cost', 100),
+        daily_quest_100_points_discount: getNumberValue('daily_quest_100_points_discount', 10),
+        coupon_min_amount_5: getNumberValue('coupon_min_amount_5', 50),
+        coupon_min_amount_10: getNumberValue('coupon_min_amount_10', 500),
+        coupon_min_amount_15: getNumberValue('coupon_min_amount_15', 1000),
+        coupon_min_amount_20: getNumberValue('coupon_min_amount_20', 50000)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching public settings:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      data: {
+        point_to_baht_rate: 1, // Default fallback
+        shop_checkin_points: 10, // Default fallback
+        daily_checkin_points: 10, // Default fallback
+        coupon_expiry_days: 1, // Default fallback
+        daily_quest_50_points_enabled: true, // Default fallback
+        daily_quest_50_points_cost: 50, // Default fallback
+        daily_quest_50_points_discount: 5, // Default fallback
+        daily_quest_100_points_enabled: true, // Default fallback
+        daily_quest_100_points_cost: 100, // Default fallback
+        daily_quest_100_points_discount: 10, // Default fallback
+        coupon_min_amount_5: 50, // Default fallback
+        coupon_min_amount_10: 500, // Default fallback
+        coupon_min_amount_15: 1000, // Default fallback
+        coupon_min_amount_20: 50000 // Default fallback
+      }
     });
   }
 });
@@ -423,9 +525,18 @@ router.get('/:userId/profile', auth, async (req, res) => {
       });
     }
 
+    // Convert shopCheckInStats Map to object for JSON serialization
+    const userData = user.toObject();
+    if (userData.shopCheckInStats) {
+      userData.shopCheckInStats = Object.fromEntries(userData.shopCheckInStats);
+      console.log(`📊 Profile response - shopCheckInStats:`, userData.shopCheckInStats);
+    } else {
+      console.log(`📊 Profile response - no shopCheckInStats found`);
+    }
+
     res.json({
       success: true,
-      data: user
+      data: userData
     });
   } catch (error) {
     console.error('Get user profile error:', error);
@@ -460,6 +571,117 @@ router.get('/:userId/shops', auth, async (req, res) => {
 });
 
 // Update user profile
+/**
+ * @route   PUT /api/users/notification-token
+ * @desc    Update user's push notification token
+ * @access  Private
+ */
+/**
+ * @route   GET /api/users/notification-token/status
+ * @desc    Check user's notification token status
+ * @access  Private
+ */
+router.get('/notification-token/status', auth, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const user = await User.findById(userId).select('notificationToken notificationTokenUpdatedAt email name');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบผู้ใช้'
+      });
+    }
+
+    const hasToken = !!user.notificationToken;
+    const { Expo } = require('expo-server-sdk');
+    const isValidToken = hasToken && Expo.isExpoPushToken(user.notificationToken);
+
+    res.json({
+      success: true,
+      data: {
+        hasToken,
+        isValidToken,
+        tokenUpdatedAt: user.notificationTokenUpdatedAt || null,
+        tokenPreview: user.notificationToken ? user.notificationToken.substring(0, 30) + '...' : null
+      }
+    });
+  } catch (error) {
+    console.error('Error checking notification token status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการตรวจสอบ notification token',
+      error: error.message
+    });
+  }
+});
+
+router.put('/notification-token', auth, async (req, res) => {
+  try {
+    const { notificationToken } = req.body;
+    const userId = req.user.id || req.user._id;
+
+    console.log(`📱 Notification token update request from user ${userId}`);
+    console.log(`   Token received: ${notificationToken ? notificationToken.substring(0, 30) + '...' : 'null'}`);
+
+    if (!notificationToken) {
+      console.log(`   ❌ No token provided`);
+      return res.status(400).json({
+        success: false,
+        message: 'กรุณาระบุ notification token'
+      });
+    }
+
+    // Validate Expo push token format (starts with ExponentPushToken or Expon)
+    const isValidExpoToken = /^(ExponentPushToken|ExpoPushToken)[A-Za-z0-9_-]+$/.test(notificationToken);
+    if (!isValidExpoToken) {
+      console.log(`   ❌ Invalid token format: ${notificationToken.substring(0, 30)}...`);
+      return res.status(400).json({
+        success: false,
+        message: 'รูปแบบ notification token ไม่ถูกต้อง'
+      });
+    }
+
+    console.log(`   ✅ Token format is valid`);
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      {
+        notificationToken,
+        notificationTokenUpdatedAt: new Date()
+      },
+      { new: true }
+    );
+
+    if (!user) {
+      console.log(`   ❌ User not found: ${userId}`);
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบผู้ใช้'
+      });
+    }
+
+    console.log(`   ✅ Notification token updated for user ${userId} (${user.email || 'N/A'})`);
+
+    res.json({
+      success: true,
+      message: 'อัปเดต notification token สำเร็จ',
+      data: {
+        userId: user._id,
+        notificationTokenUpdated: true,
+        hasToken: true
+      }
+    });
+  } catch (error) {
+    console.error('Error updating notification token:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการอัปเดต notification token',
+      error: error.message
+    });
+  }
+});
+
 router.put('/:userId/profile', auth, async (req, res) => {
   try {
     const userId = req.params.userId;
@@ -600,6 +822,12 @@ router.get('/me/points/transactions', auth, async (req, res) => {
       .limit(parseInt(limit))
       .populate('questId', 'name')
       .populate('touristQuestId', 'name')
+      .populate({
+        path: 'relatedId',
+        match: { relatedModel: { $ne: null } },
+        select: 'code discountValue discountType shopId orderNumber',
+        options: { strictPopulate: false }
+      })
       .lean();
 
     const total = await PointTransaction.countDocuments(query);
@@ -660,6 +888,12 @@ router.get('/:userId/points/transactions', auth, async (req, res) => {
       .limit(parseInt(limit))
       .populate('questId', 'name')
       .populate('touristQuestId', 'name')
+      .populate({
+        path: 'relatedId',
+        match: { relatedModel: { $ne: null } },
+        select: 'code discountValue discountType shopId orderNumber',
+        options: { strictPopulate: false }
+      })
       .lean();
 
     const total = await PointTransaction.countDocuments(query);

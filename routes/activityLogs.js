@@ -18,6 +18,12 @@ const checkRole = (allowedRoles) => {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
+    // Special handling for 'partner' role: check partnerId instead of userType
+    // Partner status is determined by partnerId, not userType
+    if (allowedRoles.includes('partner') && req.user.partnerId) {
+      return next(); // User has partnerId, allow access
+    }
+
     if (!allowedRoles.includes(req.user.userType)) {
       return res.status(403).json({ 
         success: false, 
@@ -179,7 +185,8 @@ router.get('/partner', auth, checkRole(['partner', 'admin']), async (req, res) =
     };
     
     // If user is partner (not admin), filter by their activities
-    if (req.user.userType === 'partner') {
+    // Check partnerId instead of userType (partner status is determined by partnerId)
+    if (req.user.partnerId && req.user.userType !== 'admin') {
       query.userId = req.user._id;
     }
 

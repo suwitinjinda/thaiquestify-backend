@@ -14,12 +14,12 @@ const questSettingsSchema = new mongoose.Schema({
   },
 
   // Setting Category
-  category: {
-    type: String,
-    required: true,
-    enum: ['points', 'quests', 'social', 'streak', 'system', 'job', 'reward'],
-    default: 'points'
-  },
+      category: {
+        type: String,
+        required: true,
+        enum: ['points', 'quests', 'social', 'streak', 'system', 'job', 'reward', 'delivery', 'coupon'],
+        default: 'points'
+      },
 
   // Setting Value (can be number, string, or object)
   value: {
@@ -221,16 +221,6 @@ questSettingsSchema.statics.getDefaultSettings = function() {
       maxValue: 10000
     },
     {
-      key: 'delivery_fee',
-      category: 'job',
-      displayName: 'ค่าธรรมเนียมระบบสำหรับงานส่งอาหาร',
-      description: 'ค่าธรรมเนียมที่ระบบหักจากค่าจ้างส่งอาหาร (จำนวนคงที่ บาท)',
-      value: 5,
-      valueType: 'number',
-      minValue: 0,
-      maxValue: 10000
-    },
-    {
       key: 'delivery_default_radius_km',
       category: 'job',
       displayName: 'รัศมีการส่งอาหารเริ่มต้น (กิโลเมตร)',
@@ -239,6 +229,279 @@ questSettingsSchema.statics.getDefaultSettings = function() {
       valueType: 'number',
       minValue: 1,
       maxValue: 100
+    },
+
+    // Delivery Assignment Settings
+    {
+      key: 'delivery_auto_assign_enabled',
+      category: 'delivery',
+      displayName: 'เปิดใช้งาน Auto Assignment',
+      description: 'เปิด/ปิดการมอบหมายงานส่งอาหารอัตโนมัติ',
+      value: true,
+      valueType: 'boolean'
+    },
+    {
+      key: 'delivery_assignment_timeout',
+      category: 'delivery',
+      displayName: 'เวลารอ Rider ตอบรับงาน (วินาที)',
+      description: 'เวลาที่รอให้ Rider ตอบรับงานก่อนจะหาคน rider คนใหม่ (วินาที)',
+      value: 120,
+      valueType: 'number',
+      minValue: 60,
+      maxValue: 600
+    },
+    {
+      key: 'delivery_max_retry_attempts',
+      category: 'delivery',
+      displayName: 'จำนวนครั้งสูงสุดในการหาคน Rider ใหม่',
+      description: 'จำนวนครั้งสูงสุดที่ระบบจะหาคน Rider ใหม่ก่อนจะยกเลิก Order (ครั้ง)',
+      value: 3,
+      valueType: 'number',
+      minValue: 1,
+      maxValue: 10
+    },
+    {
+      key: 'delivery_notify_riders_count',
+      category: 'delivery',
+      displayName: 'จำนวน Rider ที่ส่ง Notification',
+      description: 'จำนวน Rider ที่จะส่ง notification เมื่อมีงานใหม่',
+      value: 3,
+      valueType: 'number',
+      minValue: 1,
+      maxValue: 10
+    },
+    {
+      key: 'rider_max_concurrent_deliveries',
+      category: 'delivery',
+      displayName: 'จำนวนงานที่ Rider รับพร้อมกันได้',
+      description: 'จำนวนงานส่งอาหารที่ Rider สามารถรับพร้อมกันได้',
+      value: 2,
+      valueType: 'number',
+      minValue: 1,
+      maxValue: 5
+    },
+    {
+      key: 'shop_pay_when_rider_receive_order',
+      category: 'delivery',
+      displayName: 'Points ที่ Shop จ่ายเมื่อ Rider รับ Order',
+      description: 'จำนวน Points ที่ Shop จะจ่ายให้ Rider เมื่อ Rider ไปรับ Order ที่ร้าน',
+      value: 10,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 1000
+    },
+    {
+      key: 'reassignment_fee',
+      category: 'delivery',
+      displayName: 'ค่าธรรมเนียม Reassignment',
+      description: 'ค่าธรรมเนียมที่เพิ่มเข้าไปเมื่อมีการ Reassign งาน (บาท)',
+      value: 0,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 1000
+    },
+    {
+      key: 'point_to_baht_rate',
+      category: 'delivery',
+      displayName: 'อัตราแลกเปลี่ยน Point เป็น บาท',
+      description: '1 Point = ? บาท (ใช้เมื่อ Customer มีแต้มไม่พอ จะหักเป็นบาทแทน)',
+      value: 1,
+      valueType: 'number',
+      minValue: 0.1,
+      maxValue: 100
+    },
+    {
+      key: 'customer_pays_food_and_rider_cost',
+      category: 'delivery',
+      displayName: 'Customer จ่าย Food Cost + Rider Cost',
+      description: 'เปิดใช้งานให้ Customer จ่าย Food Cost + Rider Cost',
+      value: true,
+      valueType: 'boolean'
+    },
+    {
+      key: 'shop_no_cost_fee',
+      category: 'delivery',
+      displayName: 'Shop ไม่ต้องจ่าย Cost/Fee',
+      description: 'เปิดใช้งานให้ Shop ไม่ต้องจ่าย Cost/Fee',
+      value: true,
+      valueType: 'boolean'
+    },
+
+    // Coupon Settings
+    {
+      key: 'daily_quest_50_points_enabled',
+      category: 'reward',
+      displayName: 'เปิดใช้งาน Quest แลกคูปอง 50 แต้ม',
+      description: 'เปิด/ปิด quest แลกคูปองส่วนลด 5% ด้วย 50 แต้ม',
+      value: true,
+      valueType: 'boolean'
+    },
+    {
+      key: 'daily_quest_50_points_cost',
+      category: 'reward',
+      displayName: 'จำนวนแต้มที่ต้องใช้ (Quest 50 แต้ม)',
+      description: 'จำนวนแต้มที่ต้องใช้ในการแลกคูปองส่วนลด 5%',
+      value: 50,
+      valueType: 'number',
+      minValue: 1,
+      maxValue: 1000
+    },
+    {
+      key: 'daily_quest_50_points_discount',
+      category: 'reward',
+      displayName: 'ส่วนลด % (Quest 50 แต้ม)',
+      description: 'เปอร์เซ็นต์ส่วนลดที่ได้รับจาก quest 50 แต้ม',
+      value: 5,
+      valueType: 'number',
+      minValue: 1,
+      maxValue: 100
+    },
+    {
+      key: 'daily_quest_100_points_enabled',
+      category: 'reward',
+      displayName: 'เปิดใช้งาน Quest แลกคูปอง 100 แต้ม',
+      description: 'เปิด/ปิด quest แลกคูปองส่วนลด 10% ด้วย 100 แต้ม',
+      value: true,
+      valueType: 'boolean'
+    },
+    {
+      key: 'daily_quest_100_points_cost',
+      category: 'reward',
+      displayName: 'จำนวนแต้มที่ต้องใช้ (Quest 100 แต้ม)',
+      description: 'จำนวนแต้มที่ต้องใช้ในการแลกคูปองส่วนลด 10%',
+      value: 100,
+      valueType: 'number',
+      minValue: 1,
+      maxValue: 1000
+    },
+    {
+      key: 'daily_quest_100_points_discount',
+      category: 'reward',
+      displayName: 'ส่วนลด % (Quest 100 แต้ม)',
+      description: 'เปอร์เซ็นต์ส่วนลดที่ได้รับจาก quest 100 แต้ม',
+      value: 10,
+      valueType: 'number',
+      minValue: 1,
+      maxValue: 100
+    },
+    {
+      key: 'coupon_expiry_days',
+      category: 'reward',
+      displayName: 'อายุคูปอง (วัน)',
+      description: 'จำนวนวันที่คูปองจะหมดอายุ',
+      value: 1,
+      valueType: 'number',
+      minValue: 1,
+      maxValue: 30
+    },
+    {
+      key: 'auto_coupon_on_checkin',
+      category: 'reward',
+      displayName: 'สร้างคูปองอัตโนมัติเมื่อทำ Check-in',
+      description: 'สร้างคูปองส่วนลด 5% อัตโนมัติเมื่อทำ check-in quest เสร็จ (quest แรกของวัน)',
+      value: true,
+      valueType: 'boolean'
+    },
+    {
+      key: 'coupon_usage_fee',
+      category: 'reward',
+      displayName: 'ค่าธรรมเนียมการใช้คูปอง (ครั้งแรกต่อวัน)',
+      description: 'จำนวนแต้มที่หักจากผู้ใช้เมื่อใช้คูปองครั้งแรกของวัน (คิดครั้งเดียวต่อวันต่อ user, reset after midnight)',
+      value: 20,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 1000
+    },
+    // Coupon Minimum Amount Settings
+    {
+      key: 'coupon_min_amount_5',
+      category: 'coupon',
+      displayName: 'ยอดเงินขั้นต่ำสำหรับคูปองส่วนลด 5%',
+      description: 'ยอดเงินขั้นต่ำที่ต้องซื้อเพื่อใช้คูปองส่วนลด 5% (บาท)',
+      value: 50,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 100000
+    },
+    {
+      key: 'coupon_min_amount_10',
+      category: 'coupon',
+      displayName: 'ยอดเงินขั้นต่ำสำหรับคูปองส่วนลด 10%',
+      description: 'ยอดเงินขั้นต่ำที่ต้องซื้อเพื่อใช้คูปองส่วนลด 10% (บาท)',
+      value: 500,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 100000
+    },
+    {
+      key: 'coupon_min_amount_15',
+      category: 'coupon',
+      displayName: 'ยอดเงินขั้นต่ำสำหรับคูปองส่วนลด 15%',
+      description: 'ยอดเงินขั้นต่ำที่ต้องซื้อเพื่อใช้คูปองส่วนลด 15% (บาท)',
+      value: 1000,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 100000
+    },
+    {
+      key: 'coupon_min_amount_20',
+      category: 'coupon',
+      displayName: 'ยอดเงินขั้นต่ำสำหรับคูปองส่วนลด 20%',
+      description: 'ยอดเงินขั้นต่ำที่ต้องซื้อเพื่อใช้คูปองส่วนลด 20% (บาท)',
+      value: 50000,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 100000
+    },
+    {
+      key: 'delivery_minimum_fee',
+      category: 'delivery',
+      displayName: 'ค่าจัดส่งขั้นต่ำ (บาท)',
+      description: 'ค่าจัดส่งขั้นต่ำสำหรับระยะทาง 1-2 กม. (บาท)',
+      value: 20,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 1000
+    },
+    {
+      key: 'delivery_distance_base_km',
+      category: 'delivery',
+      displayName: 'ระยะทางที่คิดค่าจัดส่งขั้นต่ำ (กม.)',
+      description: 'ระยะทางที่คิดค่าจัดส่งขั้นต่ำ (กม.)',
+      value: 2,
+      valueType: 'number',
+      minValue: 1,
+      maxValue: 10
+    },
+    {
+      key: 'delivery_fee_per_km',
+      category: 'delivery',
+      displayName: 'ค่าจัดส่งต่อกม. เมื่อเกินระยะทางขั้นต่ำ (บาท)',
+      description: 'ค่าจัดส่งต่อกม. เมื่อเกินระยะทางขั้นต่ำ (บาท)',
+      value: 5,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 100
+    },
+    {
+      key: 'shop_delivery_order_fee',
+      category: 'delivery',
+      displayName: 'ค่าธรรมเนียม Order ส่งที่บ้าน (Points)',
+      description: 'จำนวน Points ที่ Shop ต้องจ่ายเมื่อ Order ส่งที่บ้าน Status เป็น Complete (points)',
+      value: 5,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 1000
+    },
+    {
+      key: 'order_cancel_penalty_points',
+      category: 'delivery',
+      displayName: 'Points ที่หักเมื่อ Shop/Rider Cancel Order',
+      description: 'จำนวน Points ที่จะหักจาก Shop หรือ Rider เมื่อ Cancel Order (แต่ Customer Cancel ไม่หัก)',
+      value: 5,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 1000
     },
 
     // Reward Settings
@@ -288,6 +551,18 @@ questSettingsSchema.statics.getDefaultSettings = function() {
 // Initialize default settings
 questSettingsSchema.statics.initializeDefaults = async function() {
   const defaults = this.getDefaultSettings();
+  const defaultKeys = defaults.map(s => s.key);
+  
+  // Deactivate settings that are no longer in defaults
+  const deprecatedKeys = ['rider_cancel_penalty_points', 'customer_order_points_deduction'];
+  for (const deprecatedKey of deprecatedKeys) {
+    const existing = await this.findOne({ key: deprecatedKey });
+    if (existing) {
+      existing.isActive = false;
+      await existing.save();
+      console.log(`   🗑️ Deactivated deprecated setting: ${deprecatedKey}`);
+    }
+  }
   
   for (const setting of defaults) {
     // Check if setting exists
@@ -301,7 +576,8 @@ questSettingsSchema.statics.initializeDefaults = async function() {
         valueType: setting.valueType,
         minValue: setting.minValue,
         maxValue: setting.maxValue,
-        displayName: setting.displayName
+        displayName: setting.displayName,
+        isActive: true // Ensure it's active
       };
       
       // Always update category if it changed (important for migration)

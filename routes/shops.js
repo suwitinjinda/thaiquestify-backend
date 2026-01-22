@@ -403,10 +403,42 @@ router.get('/active', async (req, res) => {
     }
 
     const shops = await Shop.find(query)
-      .select('shopName name description province district images shopType category status shopId coordinates phone address')
+      .select('shopName name description province district images shopType category status shopId coordinates phone address deliveryOption isOpen businessHours')
       .limit(parseInt(limit))
       .sort({ createdAt: -1 })
       .lean();
+
+    // Check if shop 788120 exists
+    const targetShop = shops.find(s => s.shopId === '788120' || String(s._id) === '788120');
+    if (targetShop) {
+      console.log('🔍 Found shop 788120 in query results:', {
+        shopId: targetShop.shopId,
+        _id: targetShop._id,
+        shopName: targetShop.shopName,
+        status: targetShop.status,
+        deliveryOption: targetShop.deliveryOption,
+        isOpen: targetShop.isOpen,
+        coordinates: targetShop.coordinates,
+        hasCoordinates: !!(targetShop.coordinates?.latitude && targetShop.coordinates?.longitude)
+      });
+    } else {
+      console.log('⚠️ Shop 788120 NOT found in query results');
+      // Try to find it directly
+      const directShop = await Shop.findOne({ shopId: '788120' }).lean();
+      if (directShop) {
+        console.log('🔍 Found shop 788120 via direct query:', {
+          shopId: directShop.shopId,
+          _id: directShop._id,
+          shopName: directShop.shopName,
+          status: directShop.status,
+          deliveryOption: directShop.deliveryOption,
+          isOpen: directShop.isOpen,
+          coordinates: directShop.coordinates
+        });
+      } else {
+        console.log('❌ Shop 788120 does not exist in database');
+      }
+    }
 
     // Convert image URLs to signed URLs for frontend access
     const { getSignedUrls } = require('../utils/gcpStorage');
@@ -429,7 +461,9 @@ router.get('/active', async (req, res) => {
     const mappedShops = shopsWithSignedUrls.map(shop => ({
       ...shop,
       name: shop.shopName || shop.name, // Use shopName as primary name
-      category: shop.shopType || shop.category || 'shop'
+      category: shop.shopType || shop.category || 'shop',
+      // Ensure businessHours is preserved
+      businessHours: shop.businessHours || shop.workingHours || ''
     }));
 
     console.log(`✅ Found ${mappedShops.length} active shops for ${province || 'all provinces'}`);
@@ -1055,7 +1089,7 @@ router.get('/:id/menu', async (req, res) => {
 router.post('/:id/menu', auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, price, description, image, category, isAvailable } = req.body;
+    const { name, price, description, image, category, type, isAvailable } = req.body;
 
     // Try to find shop by _id (ObjectId) or shopId (string)
     let shop;
@@ -1108,6 +1142,7 @@ router.post('/:id/menu', auth, async (req, res) => {
       description: typeof description === 'string' ? description.trim() : '',
       image: typeof image === 'string' ? image.trim() : '',
       category: typeof category === 'string' ? category.trim() : '',
+      type: type && ['food', 'dessert', 'drink', 'other'].includes(type) ? type : 'food',
       isAvailable: typeof isAvailable === 'boolean' ? isAvailable : true,
     });
 
@@ -1135,7 +1170,7 @@ router.post('/:id/menu', auth, async (req, res) => {
 router.put('/:id/menu/:menuId', auth, async (req, res) => {
   try {
     const { id, menuId } = req.params;
-    const { name, price, description, image, category, isAvailable } = req.body;
+    const { name, price, description, image, category, type, isAvailable } = req.body;
 
     // Try to find shop by _id (ObjectId) or shopId (string)
     let shop;
@@ -1204,6 +1239,10 @@ router.put('/:id/menu/:menuId', auth, async (req, res) => {
 
     if (typeof category === 'string') {
       item.category = category.trim();
+    }
+
+    if (type && ['food', 'dessert', 'drink', 'other'].includes(type)) {
+      item.type = type;
     }
 
     if (typeof isAvailable === 'boolean') {

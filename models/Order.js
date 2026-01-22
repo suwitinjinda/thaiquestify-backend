@@ -57,6 +57,21 @@ const orderSchema = new mongoose.Schema({
     default: 0,
     min: 0,
   },
+  serviceFee: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  discountAmount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  coupon: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Coupon',
+    default: null,
+  },
   total: {
     type: Number,
     required: true,
@@ -90,6 +105,13 @@ const orderSchema = new mongoose.Schema({
     enum: ['cash', 'transfer', 'card', 'other'],
     default: 'cash',
   },
+  // Order type: 'dine_in' or 'delivery'
+  orderType: {
+    type: String,
+    enum: ['dine_in', 'delivery'],
+    default: 'dine_in',
+    index: true,
+  },
   // Delivery information
   delivery: {
     type: mongoose.Schema.Types.ObjectId,
@@ -108,6 +130,13 @@ const orderSchema = new mongoose.Schema({
     ref: 'User',
     default: null,
     index: true,
+  },
+  // Who cancelled the order: 'customer', 'shop', 'rider', 'system', or null
+  cancelledBy: {
+    type: String,
+    enum: ['customer', 'shop', 'rider', 'system'],
+    required: false,
+    // No default - will be undefined/null for new orders
   },
 }, {
   timestamps: true,
