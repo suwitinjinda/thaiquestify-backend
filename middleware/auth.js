@@ -1,15 +1,15 @@
 // middleware/auth.js - UPDATED VERSION (Support custom token format)
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const _debug = () => process.env.DEBUG_AUTH === '1';
 
 const auth = async (req, res, next) => {
   try {
     const authHeader = req.header('Authorization');
-    console.log('🔐 Auth middleware - Authorization header:', authHeader);
     
     // ตรวจสอบรูปแบบ header
     if (!authHeader) {
-      console.log('❌ No Authorization header');
+      if (_debug()) console.log('❌ No Authorization header');
       return res.status(401).json({ 
         success: false,
         message: 'No authorization header' 
@@ -19,7 +19,7 @@ const auth = async (req, res, next) => {
     // แยก Bearer token
     const parts = authHeader.split(' ');
     if (parts.length !== 2 || parts[0] !== 'Bearer') {
-      console.log('❌ Invalid Authorization header format');
+      if (_debug()) console.log('❌ Invalid Authorization header format');
       return res.status(401).json({ 
         success: false,
         message: 'Invalid authorization format. Use: Bearer <token>' 
@@ -37,32 +37,18 @@ const auth = async (req, res, next) => {
       });
     }
 
-    // ✅ SUPPORT CUSTOM TOKEN FORMATS
-    console.log('🔐 Token format analysis:', {
-      startsWithUserToken: token.startsWith('user-token-'),
-      startsWithAutoLogin: token.startsWith('auto-login-'),
-      parts: token.split('-')
-    });
-
     // ✅ FORMAT 1: "user-token-{userId}-{timestamp}"
     if (token.startsWith('user-token-')) {
-      console.log('🔓 Processing user-token format');
-      
-      // Format: "user-token-{userId}-{timestamp}"
       const tokenParts = token.split('-');
-      console.log('🔓 Token parts:', tokenParts);
       
       if (tokenParts.length >= 4) {
         const userId = tokenParts[2]; // user-token-[userId]-timestamp
-        const timestamp = tokenParts[3];
-        
-        console.log('🔓 Extracted userId:', userId, 'timestamp:', timestamp);
         
         try {
           const user = await User.findById(userId).select('_id name email userType partnerCode partnerId isActive');
           
           if (!user) {
-            console.log('❌ User not found for user-token');
+            if (_debug()) console.log('❌ User not found for user-token');
             return res.status(401).json({ 
               success: false,
               message: 'User not found' 
@@ -98,7 +84,7 @@ const auth = async (req, res, next) => {
           });
         }
       } else {
-        console.log('❌ Invalid user-token format');
+        if (_debug()) console.log('❌ Invalid user-token format');
         return res.status(401).json({ 
           success: false,
           message: 'Invalid token format' 
@@ -108,16 +94,13 @@ const auth = async (req, res, next) => {
 
     // ✅ FORMAT 2: "auto-login-{userId}"
     if (token.startsWith('auto-login-')) {
-      console.log('🔓 Processing auto-login format');
-      
-      // Format: "auto-login-{userId}"
       const userId = token.replace('auto-login-', '');
       
       try {
         const user = await User.findById(userId).select('_id name email userType partnerCode partnerId isActive');
         
         if (!user) {
-          console.log('❌ User not found for auto-login');
+          if (_debug()) console.log('❌ User not found for auto-login');
           return res.status(401).json({ 
             success: false,
             message: 'User not found' 
@@ -125,7 +108,7 @@ const auth = async (req, res, next) => {
         }
 
         if (!user.isActive) {
-          console.log('❌ User account is inactive');
+          if (_debug()) console.log('❌ User account is inactive');
           return res.status(401).json({ 
             success: false,
             message: 'Account is inactive' 
@@ -156,17 +139,13 @@ const auth = async (req, res, next) => {
 
     // ✅ FORMAT 3: REAL JWT TOKEN (สำหรับ production)
     try {
-      console.log('🔐 Attempting JWT verification...');
-      
       const JWT_SECRET = process.env.JWT_SECRET || 'your-fallback-secret-key-for-development';
       const decoded = jwt.verify(token, JWT_SECRET);
-      
-      console.log('🔐 JWT decoded:', decoded);
       
       const user = await User.findById(decoded.id || decoded._id || decoded.userId).select('_id name email userType partnerCode partnerId isActive');
       
       if (!user) {
-        console.log('❌ User not found in database for JWT token');
+        if (_debug()) console.log('❌ User not found in database for JWT token');
         return res.status(401).json({ 
           success: false,
           message: 'User not found' 
@@ -174,7 +153,7 @@ const auth = async (req, res, next) => {
       }
 
       if (!user.isActive) {
-        console.log('❌ User account is inactive');
+        if (_debug()) console.log('❌ User account is inactive');
         return res.status(401).json({ 
           success: false,
           message: 'Account is inactive' 
@@ -191,14 +170,10 @@ const auth = async (req, res, next) => {
         partnerId: user.partnerId
       };
 
-      console.log(`✅ JWT authentication successful for: ${user.email} (${user.userType})`);
       next();
       
     } catch (jwtError) {
-      console.log('❌ JWT verification failed:', jwtError.message);
-      
-      // ถ้าไม่ใช่ JWT format ที่รู้จักเลย
-      console.log('❌ Token is not in any supported format');
+      if (_debug()) console.log('❌ JWT verification failed:', jwtError.message);
       return res.status(401).json({ 
         success: false,
         message: 'Invalid token format. Supported formats: user-token-*, auto-login-*, or valid JWT',

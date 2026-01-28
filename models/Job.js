@@ -159,6 +159,13 @@ const jobSchema = new mongoose.Schema({
     type: Date,
     default: null,
   },
+  // รัศมีประกาศหางาน (กม.) - ใช้ filter ระยะทางเมื่อมี coordinates
+  searchRadius: {
+    type: Number,
+    default: 10,
+    min: 1,
+    max: 500,
+  },
   // ข้อมูลติดต่อ
   contact: {
     phone: {

@@ -7,10 +7,13 @@ const Shop = require('../models/Shop');
 const FoodMenuItem = require('../models/FoodMenuItem');
 const { auth } = require('../middleware/auth');
 const deliveryAssignmentService = require('../services/deliveryAssignmentService');
+const roadDistanceService = require('../services/roadDistanceService');
 const User = require('../models/User');
 const PointTransaction = require('../models/PointTransaction');
 const QuestSettings = require('../models/QuestSettings');
 const DeliveryRequest = require('../models/DeliveryRequest');
+const Partner = require('../models/Partner');
+const ShopFeeSplitRecord = require('../models/ShopFeeSplitRecord');
 
 /**
  * @route   POST /api/orders
@@ -113,14 +116,20 @@ router.post('/', auth, async (req, res) => {
         deliveryAddress = user.address || `ตำแหน่ง: ${user.coordinates.latitude}, ${user.coordinates.longitude}`;
       }
       if (user && user.coordinates && shop.coordinates) {
-        // Calculate distance from shop to customer
-        distance = deliveryAssignmentService.calculateDistance(
-          shop.coordinates.latitude,
-          shop.coordinates.longitude,
-          user.coordinates.latitude,
-          user.coordinates.longitude
-        );
-        deliveryFee = await deliveryAssignmentService.calculateDeliveryFee(distance);
+        // Prefer road distance (Distance Matrix) for billing; fallback to Haversine
+        const roadDistanceKm = await roadDistanceService.getRoadDistanceKm(shop.coordinates, user.coordinates);
+        if (roadDistanceKm != null) {
+          distance = roadDistanceKm;
+          deliveryFee = await deliveryAssignmentService.calculateDeliveryFee(distance);
+        } else {
+          distance = deliveryAssignmentService.calculateDistance(
+            shop.coordinates.latitude,
+            shop.coordinates.longitude,
+            user.coordinates.latitude,
+            user.coordinates.longitude
+          );
+          deliveryFee = await deliveryAssignmentService.calculateDeliveryFee(distance);
+        }
       } else {
         // Fallback: use shop's default delivery price or calculate from admin settings
         deliveryFee = shop.deliveryPrice || await deliveryAssignmentService.calculateDeliveryFee(2); // Default 2km
@@ -132,11 +141,28 @@ router.post('/', auth, async (req, res) => {
     // Validate and apply coupon if provided
     let coupon = null;
     let discountAmount = 0;
-    let couponUsageFee = 0;
     const Coupon = require('../models/Coupon');
-    
+
+    // 1 คูปองต่อ user ต่อร้าน ต่อวัน (reset หลังเที่ยงคืน)
     if (couponCode) {
       try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const endOfToday = new Date(today);
+        endOfToday.setDate(endOfToday.getDate() + 1);
+        const usedTodayAtShop = await Coupon.findOne({
+          userId,
+          shopId: shop._id,
+          used: true,
+          usedAt: { $gte: today, $lt: endOfToday },
+        });
+        if (usedTodayAtShop) {
+          return res.status(400).json({
+            success: false,
+            message: 'ใช้คูปองร้านนี้แล้ววันนี้ ใช้ได้อีกครั้งหลังเที่ยงคืน',
+          });
+        }
+
         coupon = await Coupon.findOne({
           code: couponCode.toUpperCase(),
           userId: userId,
@@ -188,27 +214,6 @@ router.post('/', auth, async (req, res) => {
             });
           }
         }
-
-        // Check if this is first coupon use today (for fee deduction)
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-
-        const todayCouponUsage = await Coupon.findOne({
-          userId: userId,
-          used: true,
-          usedAt: {
-            $gte: today,
-            $lt: tomorrow
-          }
-        });
-
-        // If first coupon use today, mark for fee deduction after order is created
-        if (!todayCouponUsage) {
-          const couponFeeSetting = await QuestSettings.getSetting('coupon_usage_fee') || 20;
-          couponUsageFee = couponFeeSetting;
-        }
       } catch (couponError) {
         console.error('Error processing coupon:', couponError);
         return res.status(400).json({
@@ -218,7 +223,11 @@ router.post('/', auth, async (req, res) => {
       }
     }
 
-    const total = subtotal + deliveryFee - discountAmount;
+    const includeVat = !!shop.includeVat;
+    const vatRate = (shop.vatRate != null && !Number.isNaN(Number(shop.vatRate))) ? Number(shop.vatRate) : 7;
+    const baseForVat = Math.max(0, subtotal - discountAmount);
+    const vatAmount = includeVat ? Math.round(baseForVat * vatRate / 100 * 100) / 100 : 0;
+    const total = subtotal + deliveryFee - discountAmount + vatAmount;
 
     console.log(`📦 Creating order:`, {
       userId: userId.toString(),
@@ -228,6 +237,10 @@ router.post('/', auth, async (req, res) => {
       itemsCount: orderItems.length,
       subtotal: subtotal,
       deliveryFee: deliveryFee,
+      discountAmount: discountAmount,
+      includeVat,
+      vatRate,
+      vatAmount,
       total: total,
       deliveryAddress: deliveryAddress || 'N/A',
       phone: phone || 'N/A'
@@ -241,6 +254,7 @@ router.post('/', auth, async (req, res) => {
       subtotal: subtotal,
       deliveryFee: deliveryFee,
       discountAmount: discountAmount,
+      vatAmount: vatAmount,
       total: total,
       deliveryAddress: deliveryAddress || '',
       phone: phone || '',
@@ -279,87 +293,13 @@ router.post('/', auth, async (req, res) => {
       coupon.orderId = order._id;
       await coupon.save();
       console.log(`✅ Coupon ${coupon.code} marked as used`);
-      
-      // If first coupon use today, deduct fee from shop owner
-      if (couponUsageFee > 0) {
-        try {
-          // Get shop with owner populated
-          const shopWithOwner = await Shop.findById(shop._id).populate('user');
-          const shopOwner = shopWithOwner?.user;
-          
-          if (!shopOwner) {
-            console.warn(`⚠️ Shop ${shop._id} has no owner - skipping coupon usage fee deduction`);
-          } else if (shopOwner.points >= couponUsageFee) {
-            // Shop owner has enough points - deduct points
-            shopOwner.points -= couponUsageFee;
-            await shopOwner.save();
-            
-            // Create point transaction record for shop owner
-            const PointTransaction = require('../models/PointTransaction');
-            await PointTransaction.create({
-              userId: shopOwner._id,
-              type: 'deduction',
-              amount: -couponUsageFee,
-              description: `หักแต้มค่าธรรมเนียมการใช้คูปอง (Order: ${order.orderNumber || order._id.toString().slice(-6)})`,
-              relatedId: order._id,
-              relatedModel: 'Order',
-              remainingPoints: shopOwner.points
-            });
-            
-            console.log(`💰 Deducted ${couponUsageFee} points from shop owner (${shopOwner._id}) for coupon usage fee on Order ${order.orderNumber || order._id.toString().slice(-6)}`);
-          } else {
-            console.warn(`⚠️ Shop owner (${shopOwner._id}) has insufficient points (${shopOwner.points}/${couponUsageFee}) - but allowing order to proceed`);
-            // Note: We don't block the order if shop owner doesn't have enough points
-            // This is because the fee is deducted from shop, not customer
-          }
-        } catch (feeError) {
-          console.error('❌ Error deducting coupon usage fee from shop owner:', feeError);
-          // Don't fail the order if fee deduction fails
-        }
-      }
     }
 
-    // If order is delivery, charge shop 5 points and create delivery request
+    // If order is delivery, create delivery request (shop fee deducted when rider accepts + shop confirms)
     console.log(`🔍 Checking order type: ${finalOrderType}`);
     if (finalOrderType === 'delivery') {
-      console.log(`🚚 Order type is DELIVERY - Charging shop and creating DeliveryRequest...`);
+      console.log(`🚚 Order type is DELIVERY - Creating DeliveryRequest...`);
       try {
-        // Charge shop owner 5 points for online order
-        const shopOrderFee = 5;
-        try {
-          // Get shop with owner populated
-          const shopWithOwner = await Shop.findById(shop._id).populate('user');
-          const shopOwner = shopWithOwner?.user;
-          
-          if (!shopOwner) {
-            console.warn(`⚠️ Shop ${shop._id} has no owner - skipping shop order fee deduction`);
-          } else if (shopOwner.points >= shopOrderFee) {
-            // Shop owner has enough points - deduct points
-            shopOwner.points -= shopOrderFee;
-            await shopOwner.save();
-            
-            // Create point transaction record for shop owner
-            const PointTransaction = require('../models/PointTransaction');
-            await PointTransaction.create({
-              userId: shopOwner._id,
-              type: 'deduction',
-              amount: -shopOrderFee,
-              description: `หักแต้มค่าธรรมเนียมคำสั่งซื้อออนไลน์ (Order: ${order.orderNumber || order._id.toString().slice(-6)})`,
-              relatedId: order._id,
-              relatedModel: 'Order',
-              remainingPoints: shopOwner.points
-            });
-            
-            console.log(`💰 Deducted ${shopOrderFee} points from shop owner (${shopOwner._id}) for online order ${order.orderNumber || order._id.toString().slice(-6)}`);
-          } else {
-            console.warn(`⚠️ Shop owner (${shopOwner._id}) has insufficient points (${shopOwner.points}/${shopOrderFee}) - but allowing order to proceed`);
-            // Note: We don't block the order if shop owner doesn't have enough points
-          }
-        } catch (feeError) {
-          console.error('❌ Error deducting shop order fee:', feeError);
-          // Don't fail the order if fee deduction fails
-        }
-
         // Create DeliveryRequest for rider assignment
         const user = await User.findById(userId);
         let deliveryDistance = distance;
@@ -547,6 +487,7 @@ router.get('/', auth, async (req, res) => {
     const orders = await Order.find(query)
       .populate('shop', 'shopName shopId')
       .populate('user', 'name email phone')
+      .populate('coupon', 'code discountType discountValue')
       .populate({
         path: 'deliveryRequest',
         populate: {
@@ -806,6 +747,260 @@ router.get('/shop/:shopId', auth, async (req, res) => {
 });
 
 /**
+ * @route   POST /api/orders/customer-paid-bulk
+ * @desc    Customer declares payment for multiple orders (จ่ายเงินทั้งหมด). Single notification to shop.
+ * @access  Private
+ */
+router.post('/customer-paid-bulk', auth, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const { orderIds } = req.body || {};
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'กรุณาระบุ orderIds เป็น array' });
+    }
+
+    const orders = await Order.find({ _id: { $in: orderIds } })
+      .populate('shop', 'shopName shopId partnerId user')
+      .populate('user', 'name email');
+
+    if (orders.length === 0) {
+      return res.status(404).json({ success: false, message: 'ไม่พบคำสั่งซื้อ' });
+    }
+
+    const shopId = orders[0].shop?._id?.toString() || orders[0].shop?.toString();
+    const customerName = orders[0].user?.name || orders[0].user?.email || 'ลูกค้า';
+
+    for (const o of orders) {
+      const oShop = o.shop?._id?.toString() || o.shop?.toString();
+      if (oShop !== shopId) {
+        return res.status(400).json({ success: false, message: 'ทุกคำสั่งซื้อต้องเป็นร้านเดียวกัน' });
+      }
+      if (o.user._id.toString() !== userId.toString()) {
+        return res.status(403).json({ success: false, message: 'เฉพาะลูกค้าที่สั่งอาหารเท่านั้นที่กดจ่ายเงินได้' });
+      }
+      if (o.paymentStatus === 'paid') {
+        return res.status(400).json({ success: false, message: 'มีคำสั่งซื้อที่ชำระเงินแล้วอยู่แล้ว' });
+      }
+    }
+
+    for (const o of orders) {
+      o.customerPressedPayAt = new Date();
+      await o.save();
+    }
+
+    let shop = orders[0].shop;
+    if (!shop || typeof shop === 'string' || !shop.shopName) {
+      shop = await Shop.findById(shopId);
+    }
+    const shopOwnerUserId = shop?.user || shop?.partnerId;
+
+    if (shopOwnerUserId) {
+      try {
+        const { createOrderCustomerPaidBulkNotification } = require('../utils/notificationHelper');
+        const payload = orders.map((o) => ({
+          orderId: o._id,
+          orderNumber: o.orderNumber,
+          total: o.total,
+        }));
+        await createOrderCustomerPaidBulkNotification(shopOwnerUserId, payload, customerName);
+      } catch (notifErr) {
+        console.error('Customer-paid-bulk notification error:', notifErr);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: 'บันทึกการจ่ายเงินแล้ว รอร้านยืนยันได้รับเงิน',
+      data: { updated: orders.length },
+    });
+  } catch (error) {
+    console.error('Error in customer-paid-bulk:', error);
+    res.status(500).json({ success: false, message: 'เกิดข้อผิดพลาด', error: error.message });
+  }
+});
+
+/**
+ * @route   POST /api/orders/payment-status-bulk
+ * @desc    Shop confirms payment received for multiple orders (ได้รับเงินแล้ว). Single notification to customer.
+ * @access  Private
+ */
+router.post('/payment-status-bulk', auth, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const { orderIds } = req.body || {};
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'กรุณาระบุ orderIds เป็น array' });
+    }
+
+    const orders = await Order.find({ _id: { $in: orderIds } })
+      .populate('shop', 'shopName shopId partnerId user ownerEmail')
+      .populate('user', 'name email');
+
+    if (orders.length === 0) {
+      return res.status(404).json({ success: false, message: 'ไม่พบคำสั่งซื้อ' });
+    }
+
+    const shopId = orders[0].shop?._id?.toString() || orders[0].shop?.toString();
+    const customerUserId = orders[0].user?._id || orders[0].user;
+    let shop = orders[0].shop;
+    if (!shop || typeof shop === 'string' || !shop.shopName) {
+      shop = await Shop.findById(shopId).select('shopName shopId partnerId user ownerEmail');
+    }
+
+    const userIdStr = userId.toString();
+    const partnerIdStr = shop?.partnerId?.toString();
+    const shopUserIdStr = shop?.user?.toString();
+    const userEmail = req.user.email || req.user.userEmail;
+    const ownerEmail = shop?.ownerEmail;
+    const isShopOwner =
+      (partnerIdStr && userIdStr === partnerIdStr) ||
+      (shopUserIdStr && userIdStr === shopUserIdStr) ||
+      (userEmail && ownerEmail && userEmail.toLowerCase().trim() === ownerEmail.toLowerCase().trim());
+
+    if (!isShopOwner) {
+      return res.status(403).json({ success: false, message: 'เฉพาะร้านค้าเท่านั้นที่ยืนยันได้รับเงินได้' });
+    }
+
+    for (const o of orders) {
+      const oShop = o.shop?._id?.toString() || o.shop?.toString();
+      if (oShop !== shopId) {
+        return res.status(400).json({ success: false, message: 'ทุกคำสั่งซื้อต้องเป็นร้านเดียวกัน' });
+      }
+      if (o.user._id.toString() !== customerUserId.toString()) {
+        return res.status(400).json({ success: false, message: 'ทุกคำสั่งซื้อต้องเป็นลูกค้าคนเดียวกัน' });
+      }
+      if (o.status !== 'completed') {
+        return res.status(400).json({
+          success: false,
+          message: 'ทุกคำสั่งซื้อต้องมีสถานะเสร็จสิ้นก่อนยืนยันรับเงิน',
+        });
+      }
+      if (!o.customerPressedPayAt) {
+        return res.status(400).json({
+          success: false,
+          message: 'ลูกค้าต้องกด "จ่ายเงินแล้ว" ก่อน ร้านจึงจะกดได้รับเงินแล้วได้',
+        });
+      }
+      if (o.paymentStatus === 'paid') {
+        return res.status(400).json({ success: false, message: 'มีคำสั่งซื้อที่ยืนยันรับเงินแล้วอยู่แล้ว' });
+      }
+    }
+
+    const dineInOrders = orders.filter((o) => o.orderType === 'dine_in' || !o.orderType);
+    if (dineInOrders.length > 0) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const endOfToday = new Date(today);
+      endOfToday.setDate(endOfToday.getDate() + 1);
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      const orderIdsObj = orderIds.map((id) => new mongoose.Types.ObjectId(id.toString()));
+
+      const existing = await Order.aggregate([
+        {
+          $match: {
+            shop: new mongoose.Types.ObjectId(shopId.toString()),
+            orderType: { $ne: 'delivery' },
+            paymentStatus: 'paid',
+            updatedAt: { $gte: today, $lt: endOfToday },
+            _id: { $nin: orderIdsObj },
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$total' } } },
+      ]);
+      const existingSum = (existing[0] && existing[0].total) || 0;
+      const batchSum = dineInOrders.reduce((s, o) => s + (o.total || 0), 0);
+      const newTotal = existingSum + batchSum;
+      const threshold = (await QuestSettings.getSetting('shop_dinein_daily_threshold')) || 300;
+      const fee = (await QuestSettings.getSetting('shop_dinein_daily_fee')) || 20;
+
+      if (newTotal > threshold && fee > 0) {
+        const shopDoc = await Shop.findById(shopId).populate('user');
+        if (shopDoc && shopDoc.user) {
+          const alreadyDeducted = shopDoc.dineInFeeDeductedDate === todayStr;
+          if (!alreadyDeducted) {
+            const owner = shopDoc.user;
+            if (owner.points < fee) {
+              return res.status(400).json({
+                success: false,
+                message: 'คะแนนไม่พอ ร้านไม่สามารถรับคำสั่งซื้อได้ กรุณาเติมแต้ม',
+              });
+            }
+            owner.points -= fee;
+            await owner.save();
+            await PointTransaction.create({
+              userId: owner._id,
+              type: 'deduction',
+              amount: -fee,
+              description: `ค่าธรรมเนียมกินที่ร้าน (จ่ายเงินรวมวันเกิน ${threshold} บาท)`,
+              relatedId: orders[0]._id,
+              relatedModel: 'Order',
+              remainingPoints: owner.points,
+            });
+            shopDoc.dineInFeeDeductedDate = todayStr;
+            await shopDoc.save();
+
+            // Fee split: partner_shop_commission_rate % ของ Fee ให้ Partner, ที่เหลือ Platform. Keep record for stats.
+            const rate = shopDoc.partnerId ? ((await QuestSettings.getSetting('partner_shop_commission_rate')) || 20) : 0;
+            const partnerShare = Math.round((fee * rate) / 100);
+            const platformShare = fee - partnerShare;
+            let partnerRef = null;
+            if (shopDoc.partnerId && partnerShare > 0) {
+              const partner = await Partner.findOne({ userId: shopDoc.partnerId });
+              if (partner) {
+                partner.pendingCommission = (partner.pendingCommission || 0) + partnerShare;
+                await partner.save();
+                partnerRef = partner._id;
+                console.log(`💰 Dine-in fee split (bulk): ${fee} pts → Partner ${partnerShare} pts (${rate}%), Platform ${platformShare} pts`);
+              }
+            }
+            await ShopFeeSplitRecord.create({
+              shop: shopDoc._id,
+              order: orders[0]._id,
+              feeType: 'dine_in',
+              feeAmount: fee,
+              partnerShare,
+              platformShare,
+              commissionRatePercent: shopDoc.partnerId ? rate : null,
+              partnerId: shopDoc.partnerId || null,
+              partnerRef,
+              orderNumber: orders[0].orderNumber || '',
+              shopName: shopDoc.shopName || '',
+            });
+          }
+        }
+      }
+    }
+
+    for (const o of orders) {
+      o.paymentStatus = 'paid';
+      await o.save();
+    }
+
+    const shopName = shop?.shopName || 'ร้านค้า';
+    try {
+      const { createOrderPaymentReceivedBulkNotification } = require('../utils/notificationHelper');
+      const payload = orders.map((o) => ({
+        orderId: o._id,
+        orderNumber: o.orderNumber,
+        total: o.total,
+      }));
+      await createOrderPaymentReceivedBulkNotification(customerUserId, payload, shopName);
+    } catch (notifErr) {
+      console.error('Payment-received-bulk notification error:', notifErr);
+    }
+
+    return res.json({
+      success: true,
+      message: 'อัปเดตสถานะการชำระเงินสำเร็จ',
+      data: { updated: orders.length },
+    });
+  } catch (error) {
+    console.error('Error in payment-status-bulk:', error);
+    res.status(500).json({ success: false, message: 'เกิดข้อผิดพลาด', error: error.message });
+  }
+});
+
+/**
  * @route   GET /api/orders/:id
  * @desc    Get order by ID
  * @access  Private
@@ -816,7 +1011,7 @@ router.get('/:id', auth, async (req, res) => {
     const userId = req.user.id || req.user._id;
 
     const order = await Order.findById(orderId)
-      .populate('shop', 'shopName shopId phone')
+      .populate('shop', 'shopName shopId phone bankAccount')
       .populate('user', 'name email phone')
       .populate('items.menuItem', 'name price image')
       .populate('coupon', 'code discountType discountValue')
@@ -982,7 +1177,30 @@ router.put('/:id/status', auth, async (req, res) => {
       });
     }
 
+    // ค่าธรรมเนียมส่งที่บ้าน: หักเมื่อ rider รับงาน + ร้านยืนยัน. ตรวจสอบแต้มก่อนรับ order (ยืนยัน)
+    const isDelivery = order.orderType === 'delivery';
+    if (status === 'confirmed' && isDelivery) {
+      const fee = (await QuestSettings.getSetting('shop_delivery_order_fee')) || 5;
+      const shopWithOwner = await Shop.findById(shop._id || order.shop).populate('user');
+      const shopOwner = shopWithOwner?.user;
+      if (shopOwner) {
+        if (shopOwner.points < fee) {
+          return res.status(400).json({
+            success: false,
+            message: 'คะแนนไม่พอ ร้านไม่สามารถรับคำสั่งซื้อได้ กรุณาเติมแต้ม',
+          });
+        }
+      }
+    }
+
     order.status = status;
+
+    // Auto-set paymentStatus to 'paid' when completed only for delivery (COD). Dine-in: shop confirms via "ได้รับเงินแล้ว".
+    const isDineIn = order.orderType === 'dine_in' || !order.orderType;
+    if (status === 'completed' && order.paymentStatus !== 'paid' && !isDineIn) {
+      order.paymentStatus = 'paid';
+    }
+
     await order.save();
 
     res.json({
@@ -995,6 +1213,304 @@ router.put('/:id/status', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'เกิดข้อผิดพลาดในการอัปเดตสถานะ',
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/orders/:id/customer-paid
+ * @desc    Customer declares "จ่ายเงินแล้ว"; sets customerPressedPayAt. Shop can then confirm via payment-status.
+ * @access  Private (order owner only)
+ */
+router.put('/:id/customer-paid', auth, async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const userId = req.user.id || req.user._id;
+
+    const order = await Order.findById(orderId)
+      .populate('shop', 'shopName shopId partnerId user ownerEmail')
+      .populate('user', 'name email');
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'ไม่พบคำสั่งซื้อ' });
+    }
+
+    const isOrderOwner = order.user._id.toString() === userId.toString();
+    if (!isOrderOwner) {
+      return res.status(403).json({
+        success: false,
+        message: 'เฉพาะลูกค้าที่สั่งอาหารเท่านั้นที่กดจ่ายเงินได้',
+      });
+    }
+
+    if (order.paymentStatus === 'paid') {
+      return res.status(400).json({
+        success: false,
+        message: 'คำสั่งซื้อนี้ชำระเงินแล้ว',
+      });
+    }
+
+    order.customerPressedPayAt = new Date();
+    await order.save();
+
+    let shop = order.shop;
+    if (!shop || typeof shop === 'string' || !shop.shopName) {
+      shop = await Shop.findById(order.shop);
+    }
+    try {
+      const { createOrderCustomerPaidNotification } = require('../utils/notificationHelper');
+      const shopOwnerUserId = shop?.user || shop?.partnerId;
+      if (shopOwnerUserId) {
+        await createOrderCustomerPaidNotification(
+          shopOwnerUserId,
+          order._id,
+          order.orderNumber,
+          order.total,
+          order.user?.name || order.user?.email || 'ลูกค้า'
+        );
+      }
+    } catch (notifErr) {
+      console.error('Customer-paid notification error:', notifErr);
+    }
+
+    return res.json({
+      success: true,
+      message: 'บันทึกการจ่ายเงินแล้ว รอร้านยืนยันได้รับเงิน',
+      data: order,
+    });
+  } catch (error) {
+    console.error('Error in customer-paid:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาด',
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route   PUT /api/orders/:id/payment-status
+ * @desc    Update order payment status (shop confirms "ได้รับเงินแล้ว"). Customer uses /customer-paid.
+ * @access  Private
+ */
+router.put('/:id/payment-status', auth, async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const { paymentStatus, paymentMethod } = req.body;
+    const userId = req.user.id || req.user._id;
+
+    const validPaymentStatuses = ['pending', 'paid', 'failed', 'refunded'];
+    if (!validPaymentStatuses.includes(paymentStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: 'สถานะการชำระเงินไม่ถูกต้อง',
+      });
+    }
+
+    const order = await Order.findById(orderId)
+      .populate('shop', 'shopName shopId partnerId user ownerEmail')
+      .populate('user', 'name email');
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบคำสั่งซื้อ',
+      });
+    }
+
+    // Check if user is order owner (customer) or shop owner
+    const isOrderOwner = order.user._id.toString() === userId.toString();
+    
+    // Check if user is shop owner
+    let shop = order.shop;
+    if (!shop || typeof shop === 'string' || !shop.shopName) {
+      shop = await Shop.findById(order.shop).select('shopName shopId partnerId user ownerEmail');
+    }
+    
+    const userIdStr = userId ? userId.toString() : null;
+    const partnerIdStr = shop?.partnerId ? shop.partnerId.toString() : null;
+    const shopUserIdStr = shop?.user ? shop.user.toString() : null;
+    const userEmail = req.user.email || req.user.userEmail;
+    const ownerEmail = shop?.ownerEmail;
+
+    const isShopOwnerById = 
+      (userIdStr && partnerIdStr && userIdStr === partnerIdStr) ||
+      (userIdStr && shopUserIdStr && userIdStr === shopUserIdStr);
+    const isShopOwnerByEmail = userEmail && ownerEmail && 
+      userEmail.toLowerCase().trim() === ownerEmail.toLowerCase().trim();
+    const isShopOwner = shop && (isShopOwnerById || isShopOwnerByEmail);
+
+    // Only order owner (customer) or shop owner can update payment status
+    if (!isOrderOwner && !isShopOwner) {
+      return res.status(403).json({
+        success: false,
+        message: 'คุณไม่มีสิทธิ์แก้ไขสถานะการชำระเงินนี้',
+      });
+    }
+
+    // Only allow updating to 'paid' for now (can extend later)
+    if (paymentStatus !== 'paid') {
+      return res.status(400).json({
+        success: false,
+        message: 'สามารถอัปเดตเป็น "paid" เท่านั้น',
+      });
+    }
+
+    // Only shop can set 'paid' (ได้รับเงินแล้ว). Customer uses PUT /orders/:id/customer-paid.
+    if (isOrderOwner) {
+      return res.status(400).json({
+        success: false,
+        message: 'ลูกค้าใช้ปุ่ม "จ่ายเงินแล้ว" ในหน้าจอจ่ายเงิน ไม่ใช่รหัสนี้',
+      });
+    }
+
+    // Only allow updating from 'pending' to 'paid'
+    if (order.paymentStatus !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `ไม่สามารถอัปเดตสถานะการชำระเงินจาก "${order.paymentStatus}" เป็น "${paymentStatus}" ได้`,
+      });
+    }
+
+    // Shop confirms "ได้รับเงินแล้ว": require status=completed and customer pressed "จ่ายเงินแล้ว"
+    if (isShopOwner) {
+      if (order.status !== 'completed') {
+        return res.status(400).json({
+          success: false,
+          message: 'สามารถกดได้รับเงินแล้วได้เมื่อคำสั่งซื้อสถานะ "เสร็จสิ้น" เท่านั้น',
+        });
+      }
+      if (!order.customerPressedPayAt) {
+        return res.status(400).json({
+          success: false,
+          message: 'ลูกค้าต้องกด "จ่ายเงินแล้ว" ก่อน ร้านจึงจะกดได้รับเงินแล้วได้',
+        });
+      }
+    }
+
+    // ค่าธรรมเนียมกินที่ร้าน: เมื่อจ่ายเงินรวมทั้งวัน > เกณฑ์ (300฿) หัก 20 แต้มครั้งเดียว/วัน, รีเซ็ตเที่ยงคืน
+    const isDineInOrder = order.orderType === 'dine_in' || !order.orderType;
+    if (isShopOwner && isDineInOrder) {
+      const shopId = shop?._id || order.shop;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const endOfToday = new Date(today);
+      endOfToday.setDate(endOfToday.getDate() + 1);
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+      const existing = await Order.aggregate([
+        {
+          $match: {
+            shop: new mongoose.Types.ObjectId(shopId.toString()),
+            orderType: { $in: ['dine_in', null] },
+            paymentStatus: 'paid',
+            updatedAt: { $gte: today, $lt: endOfToday },
+            _id: { $ne: order._id },
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$total' } } },
+      ]);
+      const existingSum = (existing[0] && existing[0].total) || 0;
+      const newTotal = existingSum + (order.total || 0);
+      const threshold = (await QuestSettings.getSetting('shop_dinein_daily_threshold')) || 300;
+      const fee = (await QuestSettings.getSetting('shop_dinein_daily_fee')) || 20;
+
+      if (newTotal > threshold && fee > 0) {
+        const shopDoc = await Shop.findById(shopId).populate('user');
+        if (shopDoc && shopDoc.user) {
+          const alreadyDeducted = shopDoc.dineInFeeDeductedDate === todayStr;
+          if (!alreadyDeducted) {
+            const owner = shopDoc.user;
+            if (owner.points < fee) {
+              return res.status(400).json({
+                success: false,
+                message: 'คะแนนไม่พอ ร้านไม่สามารถรับคำสั่งซื้อได้ กรุณาเติมแต้ม',
+              });
+            }
+            owner.points -= fee;
+            await owner.save();
+            await PointTransaction.create({
+              userId: owner._id,
+              type: 'deduction',
+              amount: -fee,
+              description: `ค่าธรรมเนียมกินที่ร้าน (จ่ายเงินรวมวันเกิน ${threshold} บาท)`,
+              relatedId: order._id,
+              relatedModel: 'Order',
+              remainingPoints: owner.points,
+            });
+            shopDoc.dineInFeeDeductedDate = todayStr;
+            await shopDoc.save();
+
+            // Fee split: partner_shop_commission_rate % ของ Fee ให้ Partner, ที่เหลือ Platform. Keep record for stats.
+            const rate = shopDoc.partnerId ? ((await QuestSettings.getSetting('partner_shop_commission_rate')) || 20) : 0;
+            const partnerShare = Math.round((fee * rate) / 100);
+            const platformShare = fee - partnerShare;
+            let partnerRef = null;
+            if (shopDoc.partnerId && partnerShare > 0) {
+              const partner = await Partner.findOne({ userId: shopDoc.partnerId });
+              if (partner) {
+                partner.pendingCommission = (partner.pendingCommission || 0) + partnerShare;
+                await partner.save();
+                partnerRef = partner._id;
+                console.log(`💰 Dine-in fee split: ${fee} pts → Partner ${partnerShare} pts (${rate}%), Platform ${platformShare} pts`);
+              }
+            }
+            await ShopFeeSplitRecord.create({
+              shop: shopDoc._id,
+              order: order._id,
+              feeType: 'dine_in',
+              feeAmount: fee,
+              partnerShare,
+              platformShare,
+              commissionRatePercent: shopDoc.partnerId ? rate : null,
+              partnerId: shopDoc.partnerId || null,
+              partnerRef,
+              orderNumber: order.orderNumber || '',
+              shopName: shopDoc.shopName || '',
+            });
+          }
+        }
+      }
+    }
+
+    order.paymentStatus = paymentStatus;
+    if (paymentMethod && ['cash', 'transfer', 'card', 'other'].includes(paymentMethod)) {
+      order.paymentMethod = paymentMethod;
+    }
+    await order.save();
+
+    console.log(`✅ Payment status updated: Order ${order.orderNumber} -> ${paymentStatus} by shop owner`);
+
+    // Notify customer that shop confirmed payment received
+    try {
+      const { createOrderPaymentReceivedNotification } = require('../utils/notificationHelper');
+      const shopName = shop?.shopName || order.shop?.shopName || 'ร้านค้า';
+      const customerUserId = order.user?._id || order.user;
+      if (customerUserId) {
+        await createOrderPaymentReceivedNotification(
+          customerUserId,
+          order._id,
+          order.orderNumber,
+          order.total,
+          shopName
+        );
+        console.log(`📧 Notified customer: shop confirmed payment for order ${order.orderNumber}`);
+      }
+    } catch (notifErr) {
+      console.error('⚠️ Failed to send payment notification (payment updated successfully):', notifErr);
+    }
+
+    res.json({
+      success: true,
+      message: 'อัปเดตสถานะการชำระเงินสำเร็จ',
+      data: order,
+    });
+  } catch (error) {
+    console.error('Error updating payment status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการอัปเดตสถานะการชำระเงิน',
       error: error.message,
     });
   }

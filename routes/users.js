@@ -806,7 +806,15 @@ router.get('/me/points/transactions', auth, async (req, res) => {
     const { page = 1, limit = 50, type, status, startDate, endDate } = req.query;
     const skip = (page - 1) * limit;
 
-    const query = { userId: req.user._id || req.user.id };
+    const userId = req.user._id || req.user.id;
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'User ID not found'
+      });
+    }
+
+    const query = { userId };
     
     if (type) query.type = type;
     if (status) query.status = status;
@@ -816,19 +824,38 @@ router.get('/me/points/transactions', auth, async (req, res) => {
       if (endDate) query.createdAt.$lte = new Date(endDate);
     }
 
-    const transactions = await PointTransaction.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .populate('questId', 'name')
-      .populate('touristQuestId', 'name')
-      .populate({
-        path: 'relatedId',
-        match: { relatedModel: { $ne: null } },
-        select: 'code discountValue discountType shopId orderNumber',
-        options: { strictPopulate: false }
-      })
-      .lean();
+    // Fetch transactions with safe populate (handle missing references gracefully)
+    let transactions;
+    try {
+      transactions = await PointTransaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate({
+          path: 'questId',
+          select: 'name',
+          options: { strictPopulate: false }
+        })
+        .populate({
+          path: 'touristQuestId',
+          select: 'name',
+          options: { strictPopulate: false }
+        })
+        .populate({
+          path: 'relatedId',
+          select: 'code discountValue discountType shopId orderNumber',
+          options: { strictPopulate: false }
+        })
+        .lean();
+    } catch (populateError) {
+      console.error('⚠️ Populate error, fetching without populate:', populateError.message);
+      // Fallback: fetch without populate if populate fails
+      transactions = await PointTransaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean();
+    }
 
     const total = await PointTransaction.countDocuments(query);
 
@@ -843,7 +870,7 @@ router.get('/me/points/transactions', auth, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error fetching user point transactions:', error);
+    console.error('❌ Error fetching user point transactions:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch point transactions',
@@ -882,19 +909,38 @@ router.get('/:userId/points/transactions', auth, async (req, res) => {
       if (endDate) query.createdAt.$lte = new Date(endDate);
     }
 
-    const transactions = await PointTransaction.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .populate('questId', 'name')
-      .populate('touristQuestId', 'name')
-      .populate({
-        path: 'relatedId',
-        match: { relatedModel: { $ne: null } },
-        select: 'code discountValue discountType shopId orderNumber',
-        options: { strictPopulate: false }
-      })
-      .lean();
+    // Fetch transactions with safe populate (handle missing references gracefully)
+    let transactions;
+    try {
+      transactions = await PointTransaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate({
+          path: 'questId',
+          select: 'name',
+          options: { strictPopulate: false }
+        })
+        .populate({
+          path: 'touristQuestId',
+          select: 'name',
+          options: { strictPopulate: false }
+        })
+        .populate({
+          path: 'relatedId',
+          select: 'code discountValue discountType shopId orderNumber',
+          options: { strictPopulate: false }
+        })
+        .lean();
+    } catch (populateError) {
+      console.error('⚠️ Populate error, fetching without populate:', populateError.message);
+      // Fallback: fetch without populate if populate fails
+      transactions = await PointTransaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean();
+    }
 
     const total = await PointTransaction.countDocuments(query);
 
@@ -909,7 +955,7 @@ router.get('/:userId/points/transactions', auth, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error fetching user point transactions:', error);
+    console.error('❌ Error fetching user point transactions:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch point transactions',

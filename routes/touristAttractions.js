@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const TouristAttraction = require('../models/TouristAttraction');
 const { auth } = require('../middleware/auth');
+const User = require('../models/User');
+const PointSystem = require('../models/PointSystem');
+const ShopFeeSplitRecord = require('../models/ShopFeeSplitRecord');
+const Partner = require('../models/Partner');
 
 /**
  * GET /api/tourist-attractions
@@ -271,12 +275,98 @@ router.get('/', async (req, res) => {
 });
 
 /**
+ * GET /api/tourist-attractions/pending
+ * Get all pending submissions (admin only)
+ * IMPORTANT: This route must be defined BEFORE /:id route to avoid route conflicts
+ */
+router.get('/pending', auth, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Admin only.'
+      });
+    }
+
+    const pendingAttractions = await TouristAttraction.find({ status: 'pending' })
+      .populate('submittedBy', 'name email')
+      .sort({ submittedAt: -1 });
+
+    res.json({
+      success: true,
+      data: pendingAttractions,
+      count: pendingAttractions.length
+    });
+  } catch (error) {
+    console.error('❌ Error fetching pending attractions:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching pending attractions',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/tourist-attractions/my-submissions
+ * Get partner's own submissions (partner only)
+ * IMPORTANT: This route must be defined BEFORE /:id route to avoid route conflicts
+ */
+router.get('/my-submissions', auth, async (req, res) => {
+  try {
+    console.log('✅ /my-submissions route hit!', {
+      userId: req.user?.id || req.user?._id,
+      userType: req.user?.userType,
+      partnerId: req.user?.partnerId
+    });
+    // Check if user is a partner
+    if (!req.user.partnerId && req.user.userType !== 'partner') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Partners only.'
+      });
+    }
+
+    const submissions = await TouristAttraction.find({
+      submittedBy: req.user.id || req.user._id
+    })
+      .sort({ submittedAt: -1 });
+
+    console.log('✅ Found submissions:', submissions.length);
+    res.json({
+      success: true,
+      data: submissions,
+      count: submissions.length
+    });
+  } catch (error) {
+    console.error('❌ Error fetching my submissions:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching submissions',
+      error: error.message
+    });
+  }
+});
+
+/**
  * GET /api/tourist-attractions/:id
  * Get tourist attraction by ID
  */
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    console.log('🔍 /:id route hit with id:', id);
+    
+    // Prevent matching of specific routes that should be handled by other routes
+    if (id === 'my-submissions' || id === 'pending') {
+      console.log('⚠️ /:id route matched a specific route, this should not happen!');
+      return res.status(404).json({
+        success: false,
+        message: 'Route not found'
+      });
+    }
+    
     const attraction = await TouristAttraction.findOne({ id: id, isActive: true });
 
     if (!attraction) {
@@ -765,39 +855,6 @@ router.post('/submit', auth, async (req, res) => {
 });
 
 /**
- * GET /api/tourist-attractions/pending
- * Get all pending submissions (admin only)
- */
-router.get('/pending', auth, async (req, res) => {
-  try {
-    // Check if user is admin
-    if (req.user.userType !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Admin only.'
-      });
-    }
-
-    const pendingAttractions = await TouristAttraction.find({ status: 'pending' })
-      .populate('submittedBy', 'name email')
-      .sort({ submittedAt: -1 });
-
-    res.json({
-      success: true,
-      data: pendingAttractions,
-      count: pendingAttractions.length
-    });
-  } catch (error) {
-    console.error('❌ Error fetching pending attractions:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching pending attractions',
-      error: error.message
-    });
-  }
-});
-
-/**
  * PATCH /api/tourist-attractions/:id/approve
  * Approve a pending tourist attraction (admin only)
  */
@@ -834,6 +891,60 @@ router.patch('/:id/approve', auth, async (req, res) => {
     attraction.approvedAt = new Date();
 
     await attraction.save();
+
+    // Award commission to the partner who submitted this attraction
+    try {
+      // Get tourist quest points from point system settings (used as commission amount)
+      const pointSystem = await PointSystem.getSystem();
+      const commissionAmount = pointSystem.touristQuestPoints || 100000; // Default to 100000 if not set
+
+      // Find the partner who submitted this attraction
+      if (attraction.submittedBy) {
+        const partnerUser = await User.findById(attraction.submittedBy);
+        
+        if (partnerUser && partnerUser.partnerId) {
+          // Find Partner document
+          const partnerDoc = await Partner.findOne({ userId: partnerUser._id });
+          
+          if (partnerDoc) {
+            // Add commission to Partner's pendingCommission
+            partnerDoc.pendingCommission = (partnerDoc.pendingCommission || 0) + commissionAmount;
+            partnerDoc.totalCommission = (partnerDoc.totalCommission || 0) + commissionAmount;
+            await partnerDoc.save();
+
+            // Create ShopFeeSplitRecord for commission tracking
+            await ShopFeeSplitRecord.create({
+              feeType: 'tourist_quest',
+              feeAmount: commissionAmount,
+              partnerShare: commissionAmount, // 100% goes to partner
+              platformShare: 0, // Platform doesn't get anything from tourist quest rewards
+              partnerId: partnerUser._id,
+              partnerRef: partnerDoc._id,
+              commissionRatePercent: 100, // 100% commission for tourist quest
+              orderNumber: '', // Not applicable for tourist quest
+              jobTitle: '', // Not applicable
+              jobNumber: '', // Not applicable
+              metadata: {
+                touristAttractionId: attraction._id.toString(),
+                touristAttractionName: attraction.name || attraction.nameEn || 'ไม่มีชื่อ',
+                type: 'tourist_quest_reward'
+              }
+            });
+
+            console.log(`✅ Awarded ${commissionAmount} commission to partner ${partnerUser._id} (${partnerUser.name || partnerUser.email}) for approved tourist attraction: ${attraction.name || attraction.nameEn}`);
+          } else {
+            console.warn(`⚠️ Partner document not found for user ID: ${attraction.submittedBy}`);
+          }
+        } else {
+          console.warn(`⚠️ Partner user not found or not a partner for submittedBy ID: ${attraction.submittedBy}`);
+        }
+      } else {
+        console.warn(`⚠️ No submittedBy field found for attraction ${attraction._id}`);
+      }
+    } catch (commissionError) {
+      // Log error but don't fail the approval
+      console.error('❌ Error awarding commission to partner:', commissionError);
+    }
 
     res.json({
       success: true,
@@ -908,40 +1019,6 @@ router.patch('/:id/reject', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error rejecting tourist attraction',
-      error: error.message
-    });
-  }
-});
-
-/**
- * GET /api/tourist-attractions/my-submissions
- * Get partner's own submissions (partner only)
- */
-router.get('/my-submissions', auth, async (req, res) => {
-  try {
-    // Check if user is a partner
-    if (!req.user.partnerId && req.user.userType !== 'partner') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Partners only.'
-      });
-    }
-
-    const submissions = await TouristAttraction.find({
-      submittedBy: req.user.id || req.user._id
-    })
-      .sort({ submittedAt: -1 });
-
-    res.json({
-      success: true,
-      data: submissions,
-      count: submissions.length
-    });
-  } catch (error) {
-    console.error('❌ Error fetching my submissions:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching submissions',
       error: error.message
     });
   }

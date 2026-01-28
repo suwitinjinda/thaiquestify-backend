@@ -90,6 +90,7 @@ const userSchema = new mongoose.Schema({
   address: { type: String, default: '' },
   district: { type: String, default: '' },
   province: { type: String, default: '' },
+  nationalId: { type: String, default: '' }, // เลขบัตรประชาชน (13 หลัก)
   
   // Shipping address for delivery orders
   shippingAddress: {
@@ -107,7 +108,59 @@ const userSchema = new mongoose.Schema({
     accountName: { type: String, default: '' },
     accountNumber: { type: String, default: '' },
     bankName: { type: String, default: '' },
-    bankBranch: { type: String, default: '' }
+    bankBranch: { type: String, default: '' },
+    verified: { type: Boolean, default: false }, // Bank account verification status
+    verifiedAt: { type: Date, default: null },
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // Admin who verified
+    // Omise recipient information for automated withdrawals
+    omiseRecipientId: { type: String, default: null }, // Omise recipient ID for payouts
+    omiseRecipientCreatedAt: { type: Date, default: null }, // When recipient was created
+    metadata: { type: mongoose.Schema.Types.Mixed, default: {} } // Store additional metadata (errors, status, etc.)
+  },
+
+  // Verification documents (บัตรประชาชน, หน้าบัญชี book bank, face photo)
+  verificationDocuments: {
+    idCard: {
+      url: { type: String, default: null },
+      status: {
+        type: String,
+        enum: ['none', 'pending', 'approved', 'rejected'],
+        default: 'none'
+      },
+      uploadedAt: { type: Date, default: null },
+      reviewedAt: { type: Date, default: null },
+      reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      rejectionReason: { type: String, default: null }
+    },
+    bankBook: {
+      url: { type: String, default: null },
+      status: {
+        type: String,
+        enum: ['none', 'pending', 'approved', 'rejected'],
+        default: 'none'
+      },
+      uploadedAt: { type: Date, default: null },
+      reviewedAt: { type: Date, default: null },
+      reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      rejectionReason: { type: String, default: null }
+    },
+    facePhoto: {
+      url: { type: String, default: null },
+      status: {
+        type: String,
+        enum: ['none', 'pending', 'approved', 'rejected'],
+        default: 'none'
+      },
+      uploadedAt: { type: Date, default: null },
+      reviewedAt: { type: Date, default: null },
+      reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      rejectionReason: { type: String, default: null }
+    },
+    overallStatus: {
+      type: String,
+      enum: ['none', 'pending', 'approved', 'rejected', 'partial'],
+      default: 'none'
+    }
   },
 
   // Push notification token (for Expo Push Notifications)
@@ -289,13 +342,19 @@ const userSchema = new mongoose.Schema({
   },
 
   // *** NEW: Approved Followers for Follow Quest Prevention ***
-  // Store TikTok usernames that have been approved for follow quests
+  // Store TikTok usernames and user IDs that have been approved for follow quests
   // This prevents creating duplicate follow quests for the same user
+  // Check by openId (TikTok user ID) to ensure one-time quest per user
   approvedFollowers: [{
     tiktokUsername: {
       type: String,
-      required: true,
+      required: false, // Made optional since we now check by openId primarily
       lowercase: true // Store in lowercase for case-insensitive comparison
+    },
+    tiktokOpenId: {
+      type: String,
+      required: false, // Optional: old data may have only tiktokUsername; new entries should set this
+      index: true
     },
     approvedAt: {
       type: Date,

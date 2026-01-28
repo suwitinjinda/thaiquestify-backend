@@ -67,6 +67,11 @@ const orderSchema = new mongoose.Schema({
     default: 0,
     min: 0,
   },
+  vatAmount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
   coupon: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Coupon',
@@ -105,6 +110,11 @@ const orderSchema = new mongoose.Schema({
     enum: ['cash', 'transfer', 'card', 'other'],
     default: 'cash',
   },
+  /** Set when customer presses "จ่ายเงินแล้ว"; shop can confirm "ได้รับเงินแล้ว" only when status=completed and this is set */
+  customerPressedPayAt: {
+    type: Date,
+    default: null,
+  },
   // Order type: 'dine_in' or 'delivery'
   orderType: {
     type: String,
@@ -137,6 +147,17 @@ const orderSchema = new mongoose.Schema({
     enum: ['customer', 'shop', 'rider', 'system'],
     required: false,
     // No default - will be undefined/null for new orders
+  },
+  /** ค่าธรรมเนียมส่งที่บ้านหักแล้วเมื่อ rider รับงาน + ร้านยืนยัน order */
+  shopDeliveryFeeDeducted: {
+    type: Boolean,
+    default: false,
+  },
+  /** ค่าคอมมิชชั่น Partner Shop (บาท) - คำนวณจาก order total เมื่อร้านยืนยันรับเงิน */
+  commissionAmount: {
+    type: Number,
+    default: 0,
+    min: 0,
   },
 }, {
   timestamps: true,

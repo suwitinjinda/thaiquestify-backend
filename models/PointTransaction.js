@@ -9,7 +9,7 @@ const pointTransactionSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: ['claim', 'refund', 'adjustment', 'new_user', 'tourist_quest', 'admin_adjustment', 'streak_milestone', 'job_application_fee', 'job_commission_fee', 'reward', 'deduction', 'order_delivery'],
+    enum: ['claim', 'refund', 'adjustment', 'new_user', 'tourist_quest', 'admin_adjustment', 'streak_milestone', 'job_application_fee', 'job_commission_fee', 'reward', 'deduction', 'order_delivery', 'buy', 'withdraw'],
     index: true
   },
   
@@ -50,7 +50,7 @@ const pointTransactionSchema = new mongoose.Schema({
   // Related model name (Coupon, Order, etc.)
   relatedModel: {
     type: String,
-    enum: ['Coupon', 'Order', 'Delivery', null],
+    enum: ['Coupon', 'Order', 'Delivery', 'PointPurchase', 'CashReward', null],
     default: null
   },
   

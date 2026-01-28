@@ -2,6 +2,7 @@
 const Shop = require('../models/Shop');
 const User = require('../models/User');
 const Partner = require('../models/Partner');
+const ShopFeeSplitRecord = require('../models/ShopFeeSplitRecord');
 
 // Generate unique 6-digit shop number
 const generateShopNumber = async () => {
@@ -161,8 +162,7 @@ exports.getPartnerDashboard = async (req, res) => {
 
     // Fetch partner details from Partner model
     const partner = await Partner.findOne({ userId: partnerId })
-      .populate('userId', 'name email photo')
-      .lean();
+      .populate('userId', 'name email photo');
 
     const shops = await Shop.find({ partnerId })
       .select('shopId shopName status registeredAt province')
@@ -173,9 +173,26 @@ exports.getPartnerDashboard = async (req, res) => {
     const activeShops = shops.filter(shop => shop.status === 'active').length;
     const pendingShops = shops.filter(shop => shop.status === 'pending').length;
 
-    // Mock commission data
-    const totalCommission = activeShops * 1000;
-    const pendingCommission = pendingShops * 500;
+    // Calculate commission from ShopFeeSplitRecord (sum partnerShare)
+    const partnerRefId = partner?._id || null;
+    const partnerUserId = partnerId; // User._id
+    
+    // Total commission (all time): sum of partnerShare from ShopFeeSplitRecord
+    // Query by partnerRef (preferred) OR partnerId (fallback for old records)
+    const matchConditions = [
+      { partnerId: partnerUserId, partnerShare: { $gt: 0 } }
+    ];
+    if (partnerRefId) {
+      matchConditions.push({ partnerRef: partnerRefId, partnerShare: { $gt: 0 } });
+    }
+    const totalCommissionAgg = await ShopFeeSplitRecord.aggregate([
+      { $match: { $or: matchConditions } },
+      { $group: { _id: null, total: { $sum: '$partnerShare' } } }
+    ]);
+    const totalCommission = Number(totalCommissionAgg[0]?.total) || 0;
+
+    // Pending commission: use Partner.pendingCommission (สะสมจาก fee splits)
+    const pendingCommission = partner?.pendingCommission || 0;
 
     // Recent shops (last 5)
     const recentShops = shops.slice(0, 5).map(shop => ({
@@ -188,8 +205,8 @@ exports.getPartnerDashboard = async (req, res) => {
 
     // Build partner info from Partner model or fallback to user data
     const partnerInfo = partner ? {
-      name: `${partner.personalInfo?.firstName || ''} ${partner.personalInfo?.lastName || ''}`.trim() || req.user.name,
-      email: partner.personalInfo?.email || req.user.email,
+      name: `${partner.personalInfo?.firstName || ''} ${partner.personalInfo?.lastName || ''}`.trim() || partner.userId?.name || req.user.name,
+      email: partner.personalInfo?.email || partner.userId?.email || req.user.email,
       partnerCode: partner.partnerCode || req.user.partnerCode,
       personalInfo: partner.personalInfo,
       workingArea: partner.workingArea,

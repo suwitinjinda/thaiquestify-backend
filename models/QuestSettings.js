@@ -487,11 +487,31 @@ questSettingsSchema.statics.getDefaultSettings = function() {
       key: 'shop_delivery_order_fee',
       category: 'delivery',
       displayName: 'ค่าธรรมเนียม Order ส่งที่บ้าน (Points)',
-      description: 'จำนวน Points ที่ Shop ต้องจ่ายเมื่อ Order ส่งที่บ้าน Status เป็น Complete (points)',
+      description: 'จำนวน Points ที่ Shop ต้องจ่ายเมื่อ Rider รับงาน และ ร้านยืนยัน Order (ส่งที่บ้าน). ปรับได้จาก Admin',
       value: 5,
       valueType: 'number',
       minValue: 0,
       maxValue: 1000
+    },
+    {
+      key: 'shop_dinein_daily_fee',
+      category: 'delivery',
+      displayName: 'ค่าธรรมเนียมกินที่ร้าน (Points/วัน)',
+      description: 'จำนวน Points ที่ Shop ต้องจ่ายเมื่อจ่ายเงินรวมทั้งวันเกินเกณฑ์ (ครั้งเดียวต่อวัน, reset เที่ยงคืน). ปรับได้จาก Admin',
+      value: 20,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 1000
+    },
+    {
+      key: 'shop_dinein_daily_threshold',
+      category: 'delivery',
+      displayName: 'เกณฑ์ยอดจ่ายเงินกินที่ร้าน (บาท/วัน)',
+      description: 'เมื่อยอดจ่ายเงินกินที่ร้านรวมทั้งวันเกินค่านี้ ให้หักค่าธรรมเนียมกินที่ร้านครั้งเดียวต่อวัน',
+      value: 300,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 1000000
     },
     {
       key: 'order_cancel_penalty_points',
@@ -502,6 +522,16 @@ questSettingsSchema.statics.getDefaultSettings = function() {
       valueType: 'number',
       minValue: 0,
       maxValue: 1000
+    },
+    {
+      key: 'partner_shop_commission_rate',
+      category: 'delivery',
+      displayName: 'อัตราค่าคอมมิชชั่น Partner Shop (%)',
+      description: 'สัดส่วน Fee ที่ร้านจ่าย (points) ที่ให้ Partner Shop; ที่เหลือเป็น Platform. เช่น 20 = 20% ของ Fee ให้ Partner, 80% Platform. ปรับได้จาก Admin',
+      value: 20,
+      valueType: 'number',
+      minValue: 0,
+      maxValue: 100
     },
 
     // Reward Settings
@@ -544,6 +574,17 @@ questSettingsSchema.statics.getDefaultSettings = function() {
       valueType: 'number',
       minValue: 0,
       maxValue: 10000
+    },
+    // Point System Settings
+    {
+      key: 'point_conversion_rate',
+      category: 'points',
+      displayName: 'อัตราแลกเปลี่ยน Point (บาทต่อ Point)',
+      description: 'จำนวนบาทที่เท่ากับ 1 Point (เช่น 1 = 1 บาทต่อ 1 Point, 0.5 = 0.5 บาทต่อ 1 Point)',
+      value: 1,
+      valueType: 'number',
+      minValue: 0.01,
+      maxValue: 100
     }
   ];
 };

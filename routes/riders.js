@@ -770,6 +770,186 @@ router.get('/admin/all', auth, adminAuth, async (req, res) => {
   }
 });
 
+// Get rider statistics (GET /api/rider/statistics)
+router.get('/statistics', auth, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user._id;
+    const { period = 'daily' } = req.query; // 'daily', 'monthly', 'yearly'
+    
+    const Delivery = require('../models/Delivery');
+    const mongoose = require('mongoose');
+    
+    // Find rider by user ID
+    const rider = await Rider.findOne({ user: userId });
+    
+    if (!rider) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบข้อมูล Rider'
+      });
+    }
+    
+    // Verify rider can access their own statistics
+    if (rider.user.toString() !== userId.toString() && req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'คุณไม่มีสิทธิ์เข้าถึงสถิตินี้'
+      });
+    }
+    
+    // Use User ID (not Rider document ID) to match deliveries
+    // Delivery.rider stores User ID, and we also check riderCode for backward compatibility
+    const userIdForQuery = rider.user.toString();
+    const riderCodeForQuery = rider.riderCode;
+    
+    const now = new Date();
+    let startDate, endDate, groupFormat;
+    
+    // Set date range and aggregation format based on period
+    if (period === 'daily') {
+      startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 30);
+      endDate = now;
+      groupFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' }
+      };
+    } else if (period === 'monthly') {
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 12);
+      endDate = now;
+      groupFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' }
+      };
+    } else if (period === 'yearly') {
+      startDate = new Date(now);
+      startDate.setFullYear(startDate.getFullYear() - 5);
+      endDate = now;
+      groupFormat = {
+        year: { $year: '$createdAt' }
+      };
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid period. Must be: daily, monthly, or yearly'
+      });
+    }
+    
+    // Build match query - match by User ID OR riderCode (for backward compatibility)
+    const matchQuery = {
+      createdAt: { $gte: startDate, $lte: endDate }
+    };
+    
+    if (riderCodeForQuery) {
+      // Query by riderCode OR rider (User ID) to support both new and old deliveries
+      matchQuery.$or = [
+        { riderCode: riderCodeForQuery },
+        { rider: new mongoose.Types.ObjectId(userIdForQuery) }
+      ];
+    } else {
+      // Fallback to User ID if riderCode is not available
+      matchQuery.rider = new mongoose.Types.ObjectId(userIdForQuery);
+    }
+    
+    // Aggregate delivery statistics for this rider
+    // Count deliveries by status: completed, cancelled, etc.
+    const deliveryData = await Delivery.aggregate([
+      {
+        $match: matchQuery
+      },
+      {
+        $group: {
+          _id: groupFormat,
+          totalDeliveries: { $sum: 1 },
+          completedDeliveries: {
+            $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] }
+          },
+          cancelledDeliveries: {
+            $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] }
+          },
+          totalEarnings: {
+            $sum: {
+              $cond: [
+                { $eq: ['$status', 'delivered'] },
+                { $ifNull: ['$riderFee', 0] },
+                0
+              ]
+            }
+          },
+          avgEarnings: {
+            $avg: {
+              $cond: [
+                { $eq: ['$status', 'delivered'] },
+                { $ifNull: ['$riderFee', 0] },
+                null
+              ]
+            }
+          }
+        }
+      },
+      {
+        $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 }
+      }
+    ]);
+    
+    // Format data for frontend
+    const formattedData = deliveryData.map(item => {
+      let label;
+      if (period === 'daily') {
+        const date = new Date(item._id.year, item._id.month - 1, item._id.day);
+        label = date.toLocaleDateString('th-TH', { day: '2-digit', month: 'short' });
+      } else if (period === 'monthly') {
+        const date = new Date(item._id.year, item._id.month - 1);
+        label = date.toLocaleDateString('th-TH', { month: 'long', year: 'numeric' });
+      } else {
+        label = `${item._id.year}`;
+      }
+      
+      return {
+        label,
+        totalDeliveries: item.totalDeliveries,
+        completedDeliveries: item.completedDeliveries || 0,
+        cancelledDeliveries: item.cancelledDeliveries || 0,
+        earnings: item.totalEarnings || 0,
+        avgEarnings: Math.round((item.avgEarnings || 0) * 100) / 100
+      };
+    });
+    
+    // Calculate summary
+    const totalDeliveries = formattedData.reduce((sum, item) => sum + item.totalDeliveries, 0);
+    const totalCompleted = formattedData.reduce((sum, item) => sum + item.completedDeliveries, 0);
+    const totalCancelled = formattedData.reduce((sum, item) => sum + item.cancelledDeliveries, 0);
+    const totalEarnings = formattedData.reduce((sum, item) => sum + item.earnings, 0);
+    const avgEarnings = formattedData.length > 0 ? totalEarnings / formattedData.length : 0;
+    const avgPerDelivery = totalCompleted > 0 ? Math.round((totalEarnings / totalCompleted) * 100) / 100 : 0;
+    
+    res.json({
+      success: true,
+      data: {
+        period,
+        data: formattedData,
+        summary: {
+          totalDeliveries,
+          totalCompleted,
+          totalCancelled,
+          totalEarnings,
+          avgEarnings: Math.round(avgEarnings * 100) / 100,
+          avgPerDelivery
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get rider statistics error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 // Get rider details with images (for Partner/Admin review - GET /api/rider/:riderId)
 router.get('/:riderId', auth, async (req, res) => {
   try {

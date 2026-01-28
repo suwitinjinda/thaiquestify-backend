@@ -89,6 +89,22 @@ router.post('/create', auth, async (req, res) => {
           message: 'กรุณาเชื่อมต่อ TikTok ก่อนสร้าง quest'
         });
       }
+      // If user already has an active TikTok follow quest (same TikTok), return it so frontend can go to edit
+      const existingFollow = await SocialQuest.findOne({
+        owner: user._id,
+        template: 'tiktok_follow',
+        status: 'active',
+        'tiktokProfile.openId': tiktok.openId
+      }).lean();
+      if (existingFollow) {
+        return res.json({
+          success: true,
+          alreadyExists: true,
+          existingQuestId: existingFollow._id.toString(),
+          quest: existingFollow,
+          message: 'คุณมีเควส Follow TikTok นี้อยู่แล้ว ไปที่หน้าแก้ไข'
+        });
+      }
     } else if (template === 'tiktok_share_url') {
       // Validate share URL
       if (!shareUrl || !shareUrl.includes('tiktok.com')) {
@@ -151,21 +167,14 @@ router.post('/create', auth, async (req, res) => {
         ? `https://www.tiktok.com/@${usernameForUrl.replace('@', '')}`
         : `https://www.tiktok.com/@${tiktok.openId}`;
       
-      // Check if this username (owner's TikTok username) has already been approved in any follow quest
-      // We need to check all users' approvedFollowers lists to see if this username exists
-      // This prevents creating duplicate follow quests for the same TikTok account
-      const ownerUsername = usernameForDisplay.toLowerCase();
+      // Owner can create follow quests anytime (no block).
+      // Only when listing: users who already have this owner in approvedFollowers will not see this quest (one-time per follower).
+      const ownerOpenId = tiktok.openId;
       
-      // Find if any user has this username in their approvedFollowers list
-      // This means someone has already been approved for following this TikTok account
-      const existingApproval = await User.findOne({
-        'approvedFollowers.tiktokUsername': ownerUsername
-      });
-      
-      if (existingApproval) {
+      if (!ownerOpenId) {
         return res.status(400).json({
           success: false,
-          message: `ไม่สามารถสร้าง quest follow สำหรับ @${usernameForDisplay} ได้ เนื่องจากเคย approve แล้วใน quest อื่น`
+          message: 'ไม่พบ TikTok user ID (openId) - ไม่สามารถสร้าง quest ได้'
         });
       }
       
@@ -285,11 +294,14 @@ router.get('/list', auth, async (req, res) => {
 
     console.log(`🔍 [SOCIAL_QUESTS_LIST] Converted User ID: ${userId} (type: ${typeof userId})`);
 
-    // Get current user's approvedFollowers list (TikTok usernames that have been approved)
+    // Get current user's approvedFollowers list (TikTok openIds and usernames that have been approved)
+    // Check by openId (TikTok user ID) to ensure one-time quest per user
     const currentUser = await User.findById(userId).select('approvedFollowers');
-    const approvedUsernames = currentUser?.approvedFollowers?.map(f => f.tiktokUsername.toLowerCase()) || [];
+    const approvedOpenIds = currentUser?.approvedFollowers?.map(f => f.tiktokOpenId).filter(Boolean) || [];
+    const approvedUsernames = currentUser?.approvedFollowers?.map(f => f.tiktokUsername?.toLowerCase()).filter(Boolean) || [];
     
-    console.log(`👥 [SOCIAL_QUESTS_LIST] User has ${approvedUsernames.length} approved followers:`, approvedUsernames);
+    console.log(`👥 [SOCIAL_QUESTS_LIST] User has ${approvedOpenIds.length} approved followers (by openId):`, approvedOpenIds);
+    console.log(`👥 [SOCIAL_QUESTS_LIST] User has ${approvedUsernames.length} approved followers (by username):`, approvedUsernames);
 
     // Get active quests from other users only (exclude all own quests)
     const query = {
@@ -329,9 +341,21 @@ router.get('/list', auth, async (req, res) => {
         return false;
       }
       
-      // For follow quests: filter out if owner's TikTok username is in approvedFollowers list
+      // For follow quests: filter out if owner's TikTok openId (user ID) is in approvedFollowers list
+      // Check by openId first (primary check) - ensures one-time quest per TikTok user
       if (quest.template === 'tiktok_follow') {
-        // Get owner's TikTok username from quest data or owner object
+        // Get owner's TikTok openId from quest data (primary identifier)
+        const ownerTiktokOpenId = quest.tiktokProfile?.openId || 
+                                  quest.owner?.integrations?.tiktok?.openId ||
+                                  '';
+        
+        // Check by openId first (most reliable - username can change)
+        if (ownerTiktokOpenId && approvedOpenIds.includes(ownerTiktokOpenId)) {
+          console.log(`🚫 [SOCIAL_QUESTS_LIST] Filtered out quest ${quest._id} - TikTok user (openId: ${ownerTiktokOpenId}) already in approvedFollowers (one-time quest)`);
+          return false;
+        }
+        
+        // Fallback: Also check by username (for backward compatibility)
         const ownerTiktokUsername = quest.tiktokProfile?.username || 
                                     quest.owner?.integrations?.tiktok?.username ||
                                     '';
@@ -339,7 +363,7 @@ router.get('/list', auth, async (req, res) => {
         if (ownerTiktokUsername) {
           const ownerUsernameLower = ownerTiktokUsername.toLowerCase();
           if (approvedUsernames.includes(ownerUsernameLower)) {
-            console.log(`🚫 [SOCIAL_QUESTS_LIST] Filtered out quest ${quest._id} - @${ownerTiktokUsername} is already in approvedFollowers`);
+            console.log(`🚫 [SOCIAL_QUESTS_LIST] Filtered out quest ${quest._id} - @${ownerTiktokUsername} is already in approvedFollowers (by username)`);
             return false;
           }
         }
@@ -391,8 +415,20 @@ router.get('/list', auth, async (req, res) => {
         return false;
       }
       
-      // For follow quests: filter out if owner's TikTok username is in approvedFollowers list
+      // For follow quests: filter out if owner's TikTok openId (user ID) is in approvedFollowers list
+      // Check by openId first (primary check) - ensures one-time quest per TikTok user
       if (quest.template === 'tiktok_follow') {
+        // Get owner's TikTok openId from quest data (primary identifier)
+        const ownerTiktokOpenId = quest.tiktokProfile?.openId || 
+                                  quest.owner?.integrations?.tiktok?.openId ||
+                                  '';
+        
+        // Check by openId first (most reliable - username can change)
+        if (ownerTiktokOpenId && approvedOpenIds.includes(ownerTiktokOpenId)) {
+          return false;
+        }
+        
+        // Fallback: Also check by username (for backward compatibility)
         const ownerTiktokUsername = quest.tiktokProfile?.username || 
                                     quest.owner?.integrations?.tiktok?.username ||
                                     '';
@@ -493,6 +529,23 @@ router.get('/my-quests', auth, async (req, res) => {
       message: 'เกิดข้อผิดพลาดในการโหลด quests',
       error: error.message
     });
+  }
+});
+
+/**
+ * GET /api/social-quests/owner/pending-count
+ * Count of pending participations on quests owned by current user (for badge/notification)
+ */
+router.get('/owner/pending-count', auth, async (req, res) => {
+  try {
+    const count = await SocialQuestParticipation.countDocuments({
+      status: 'pending',
+      quest: { $in: await SocialQuest.find({ owner: req.user.id }).distinct('_id') }
+    });
+    res.json({ success: true, count: count || 0 });
+  } catch (error) {
+    console.error('❌ Error fetching owner pending count:', error);
+    res.status(500).json({ success: false, count: 0 });
   }
 });
 
@@ -664,6 +717,75 @@ router.get('/:questId', auth, async (req, res) => {
       message: 'เกิดข้อผิดพลาดในการโหลด quest',
       error: error.message
     });
+  }
+});
+
+/**
+ * PATCH /api/social-quests/:questId/cancel
+ * Owner cancels own quest (sets status to cancelled)
+ */
+router.patch('/:questId/cancel', auth, async (req, res) => {
+  try {
+    const quest = await SocialQuest.findById(req.params.questId);
+    if (!quest) {
+      return res.status(404).json({ success: false, message: 'ไม่พบ quest' });
+    }
+    if (quest.owner.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'เฉพาะเจ้าของ quest เท่านั้นที่ยกเลิกได้' });
+    }
+    if (quest.status !== 'active') {
+      return res.status(400).json({ success: false, message: 'ยกเลิกได้เฉพาะ quest ที่สถานะ active' });
+    }
+    quest.status = 'cancelled';
+    quest.cancelledAt = new Date();
+    quest.cancellationReason = req.body.reason || 'เจ้าของยกเลิก';
+    await quest.save();
+    res.json({ success: true, quest });
+  } catch (error) {
+    console.error('❌ Error cancelling quest:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+/**
+ * PATCH /api/social-quests/:questId
+ * Owner updates own quest (title, description, pointsReward, maxParticipants, expiresAt)
+ */
+router.patch('/:questId', auth, async (req, res) => {
+  try {
+    const quest = await SocialQuest.findById(req.params.questId);
+    if (!quest) {
+      return res.status(404).json({ success: false, message: 'ไม่พบ quest' });
+    }
+    if (quest.owner.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'เฉพาะเจ้าของ quest เท่านั้นที่แก้ไขได้' });
+    }
+    const { title, description, pointsReward, maxParticipants, expiresAt } = req.body;
+    if (title !== undefined) quest.title = title;
+    if (description !== undefined) quest.description = description;
+    if (pointsReward !== undefined) {
+      const n = parseInt(pointsReward, 10);
+      if (isNaN(n) || n < 1) {
+        return res.status(400).json({ success: false, message: 'คะแนนรางวัลต้องเป็นเลขจำนวนเต็มอย่างน้อย 1' });
+      }
+      quest.pointsReward = n;
+    }
+    if (maxParticipants !== undefined) {
+      const m = maxParticipants === '' || maxParticipants === null ? null : parseInt(maxParticipants, 10);
+      if (m !== null && (isNaN(m) || m < 0)) {
+        return res.status(400).json({ success: false, message: 'จำนวนผู้เข้าร่วมสูงสุดต้องเป็นเลขจำนวนเต็มหรือว่าง' });
+      }
+      if (m !== null && quest.currentParticipants > m) {
+        return res.status(400).json({ success: false, message: `จำนวนผู้เข้าร่วมสูงสุดต้องไม่น้อยกว่าผู้เข้าร่วมปัจจุบัน (${quest.currentParticipants})` });
+      }
+      quest.maxParticipants = m;
+    }
+    if (expiresAt !== undefined) quest.expiresAt = expiresAt ? new Date(expiresAt) : null;
+    await quest.save();
+    res.json({ success: true, quest });
+  } catch (error) {
+    console.error('❌ Error updating quest:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 

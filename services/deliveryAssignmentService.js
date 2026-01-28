@@ -662,12 +662,11 @@ async function acceptDelivery(deliveryRequestId, riderId) {
       throw new Error(`Rider already has ${activeCount} active deliveries (max: ${maxConcurrent})`);
     }
     
-    // Calculate delivery fee and total price
-    const deliveryFee = await calculateDeliveryFee(deliveryRequest.distance);
+    // Use fee from order creation (road distance when GOOGLE_MAPS_API_KEY set); fallback recalc from request.distance
+    const deliveryFee = deliveryRequest.requestedDeliveryFee ?? deliveryRequest.riderFee ?? await calculateDeliveryFee(deliveryRequest.distance);
     // Use subtotal (food cost only), not total (which includes delivery fee)
     const foodCost = deliveryRequest.order?.subtotal || 0;
     // Total price should match order.total (which is subtotal + deliveryFee - discountAmount)
-    // Use order.total as the source of truth
     const totalPrice = deliveryRequest.order?.total || await calculateTotalPrice(foodCost, deliveryRequest.distance);
     
     // Get customer
@@ -911,45 +910,13 @@ async function handleRiderPickup(deliveryId) {
       throw new Error('Delivery must be assigned before pickup');
     }
     
-    // Get shop payment setting
-    const paymentPoints = await getSetting('shop_pay_when_rider_receive_order', 10);
-    
-    if (paymentPoints > 0) {
-      // Add points to rider
-      const riderUser = await User.findById(delivery.rider.user || delivery.rider._id);
-      if (riderUser) {
-        riderUser.points = (riderUser.points || 0) + paymentPoints;
-        await riderUser.save();
-        
-        // Create point transaction
-        const pointTransaction = new PointTransaction({
-          user: riderUser._id,
-          amount: paymentPoints,
-          type: 'shop_payment',
-          description: `ได้รับ points จาก Shop เมื่อรับ Order (${delivery.deliveryNumber})`,
-          relatedEntity: {
-            type: 'Delivery',
-            id: delivery._id
-          }
-        });
-        await pointTransaction.save();
-        
-        // Update point system
-        const pointSystem = await PointSystem.findOne();
-        if (pointSystem) {
-          pointSystem.used -= paymentPoints;
-          pointSystem.available = (pointSystem.available || 0) + paymentPoints;
-          await pointSystem.save();
-        }
-      }
-      
-      delivery.shopPaidPoints = paymentPoints;
-      delivery.shopPaidAt = new Date();
-    }
+    // Shop payment to rider has been removed (as per user request)
+    console.log(`ℹ️ Rider picked up order - no points payment applied`);
     
     // Update delivery status
     delivery.status = 'picked_up';
     delivery.pickedUpAt = new Date();
+    delivery.shopPaidPoints = 0; // No payment
     await delivery.save();
     
     // Send notification to shop
@@ -957,7 +924,7 @@ async function handleRiderPickup(deliveryId) {
     
     return {
       success: true,
-      paymentPoints,
+      paymentPoints: 0, // No payment
       delivery
     };
     

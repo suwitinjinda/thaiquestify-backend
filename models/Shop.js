@@ -106,6 +106,17 @@ const shopSchema = new mongoose.Schema({
     default: null,
     min: 0
   },
+  // VAT 7% – เพิ่มในคำสั่งซื้อหรือไม่ (ให้ user คำนวณค่าอาหารรวม VAT)
+  includeVat: {
+    type: Boolean,
+    default: false
+  },
+  vatRate: {
+    type: Number,
+    default: 7,
+    min: 0,
+    max: 100
+  },
   // Bank account information for withdrawal/deposit
   bankAccount: {
     accountName: {
@@ -171,6 +182,11 @@ const shopSchema = new mongoose.Schema({
   isDeleted: {
     type: Boolean,
     default: false
+  },
+  /** วันที่หักค่าธรรมเนียมกินที่ร้านแล้ว (YYYY-MM-DD). reset เที่ยงคืน */
+  dineInFeeDeductedDate: {
+    type: String,
+    default: null
   }
 }, {
   timestamps: true

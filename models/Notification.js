@@ -10,7 +10,28 @@ const notificationSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: ['job_reminder', 'job_status', 'payment', 'system', 'wallet'],
+    enum: [
+      'job_reminder', 
+      'job_status', 
+      'payment', 
+      'system', 
+      'wallet',
+      'quest',
+      'reward',
+      'partner',
+      'shop',
+      'tourist',
+      'verification',
+      'order',
+      'delivery',
+      'admin',
+      'approval',
+      'rejection',
+      'rider',
+      'delivery_assignment',
+      'delivery_status',
+      'rider_earnings'
+    ],
     index: true
   },
   title: {

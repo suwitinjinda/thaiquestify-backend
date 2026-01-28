@@ -494,20 +494,7 @@ router.post('/claim-welcome', auth, async (req, res) => {
       });
     }
 
-    // All rewards use default_reward_streak_required from admin settings
-    const defaultStreakSetting = await StreakSettings.findOne({ key: 'default_reward_streak_required' });
-    const defaultStreakRequired = defaultStreakSetting?.value || 14;
-    if (defaultStreakRequired > 0) {
-      const currentStreak = user.streakStats?.currentStreak || 0;
-      if (currentStreak < defaultStreakRequired) {
-        return res.status(400).json({
-          success: false,
-          message: `คุณต้องมี streak ${defaultStreakRequired} วัน แต่คุณมี streak ${currentStreak} วัน`
-        });
-      }
-    }
-
-    // Get reward points from settings
+    // Get reward points from admin setting: reward tab => รางวัลต้อนรับผู้ใช้ใหม่ (new_user_welcome_reward_points). No streak condition.
     const rewardSetting = await QuestSettings.findOne({ key: 'new_user_welcome_reward_points' });
     const pointsToAward = rewardSetting?.value || 500; // Default 500 points
 
@@ -604,20 +591,7 @@ router.post('/claim-first-shop', auth, async (req, res) => {
       });
     }
 
-    // All rewards use default_reward_streak_required from admin settings
-    const defaultStreakSetting = await StreakSettings.findOne({ key: 'default_reward_streak_required' });
-    const defaultStreakRequired = defaultStreakSetting?.value || 14;
-    if (defaultStreakRequired > 0) {
-      const currentStreak = user.streakStats?.currentStreak || 0;
-      if (currentStreak < defaultStreakRequired) {
-        return res.status(400).json({
-          success: false,
-          message: `คุณต้องมี streak ${defaultStreakRequired} วัน แต่คุณมี streak ${currentStreak} วัน`
-        });
-      }
-    }
-
-    // Get reward points from settings
+    // Get reward points from admin setting: reward tab => รางวัลร้านค้าแรก (first_shop_reward_points). No streak condition.
     const rewardSetting = await QuestSettings.findOne({ key: 'first_shop_reward_points' });
     const pointsToAward = rewardSetting?.value || 500; // Default 500 points
 
@@ -706,20 +680,7 @@ router.post('/claim-new-partner', auth, async (req, res) => {
       });
     }
 
-    // All rewards use default_reward_streak_required from admin settings
-    const defaultStreakSetting = await StreakSettings.findOne({ key: 'default_reward_streak_required' });
-    const defaultStreakRequired = defaultStreakSetting?.value || 14;
-    if (defaultStreakRequired > 0) {
-      const currentStreak = user.streakStats?.currentStreak || 0;
-      if (currentStreak < defaultStreakRequired) {
-        return res.status(400).json({
-          success: false,
-          message: `คุณต้องมี streak ${defaultStreakRequired} วัน แต่คุณมี streak ${currentStreak} วัน`
-        });
-      }
-    }
-
-    // Get reward points from settings
+    // Get reward points from admin setting: reward tab => รางวัล Partner หน้าใหม่ (new_partner_reward_points). No streak condition.
     const rewardSetting = await QuestSettings.findOne({ key: 'new_partner_reward_points' });
     const pointsToAward = rewardSetting?.value || 500; // Default 500 points
 
@@ -862,14 +823,35 @@ router.get('/available', auth, async (req, res) => {
 
 /**
  * GET /api/v2/rewards
- * Get all active rewards (for users to view and claim)
+ * Get all active rewards (for users to view and claim).
+ * For reward tab items (รางวัลต้อนรับผู้ใช้ใหม่, รางวัลร้านค้าแรก, รางวัล Partner หน้าใหม่),
+ * points and streak come from admin settings; no streak condition.
  */
 router.get('/', auth, async (req, res) => {
   try {
     // Get only active rewards, sorted by order
-    const rewards = await Reward.find({ active: true })
+    let rewards = await Reward.find({ active: true })
       .sort({ order: 1, createdAt: -1 })
-      .select('rewardId name description category pointsRequired streakRequired cashAmount isMilestone image order');
+      .select('rewardId name description category pointsRequired streakRequired cashAmount isMilestone image order')
+      .lean();
+
+    const welcomeSetting = await QuestSettings.findOne({ key: 'new_user_welcome_reward_points' });
+    const firstShopSetting = await QuestSettings.findOne({ key: 'first_shop_reward_points' });
+    const newPartnerSetting = await QuestSettings.findOne({ key: 'new_partner_reward_points' });
+
+    rewards = rewards.map((r) => {
+      const rid = r.rewardId || r._id?.toString();
+      if (rid === 'new_user_welcome_reward') {
+        return { ...r, pointsRequired: welcomeSetting?.value ?? r.pointsRequired ?? 500, streakRequired: 0 };
+      }
+      if (rid === 'first_shop_reward') {
+        return { ...r, pointsRequired: firstShopSetting?.value ?? r.pointsRequired ?? 500, streakRequired: 0 };
+      }
+      if (rid === 'new_partner_reward') {
+        return { ...r, pointsRequired: newPartnerSetting?.value ?? r.pointsRequired ?? 500, streakRequired: 0 };
+      }
+      return r;
+    });
 
     res.json({
       success: true,

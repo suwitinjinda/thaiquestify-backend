@@ -265,7 +265,8 @@ router.get('/my-coupons', auth, async (req, res) => {
 
 /**
  * GET /coupons/valid/:shopId
- * Get valid coupons for a specific shop
+ * Get valid coupons for a specific shop.
+ * usedCouponAtShopToday: true ถ้า user ใช้คูปองร้านนี้แล้ววันนี้ (1 ต่อร้านต่อวัน, reset เที่ยงคืน)
  */
 router.get('/valid/:shopId', auth, async (req, res) => {
   try {
@@ -273,6 +274,17 @@ router.get('/valid/:shopId', auth, async (req, res) => {
     const { shopId } = req.params;
 
     const now = new Date();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(today);
+    endOfToday.setDate(endOfToday.getDate() + 1);
+    const usedTodayAtShop = await Coupon.findOne({
+      userId,
+      shopId,
+      used: true,
+      usedAt: { $gte: today, $lt: endOfToday },
+    });
+
     const coupons = await Coupon.find({
       userId: userId,
       shopId: shopId,
@@ -285,7 +297,8 @@ router.get('/valid/:shopId', auth, async (req, res) => {
 
     res.json({
       success: true,
-      data: coupons
+      data: coupons,
+      usedCouponAtShopToday: !!usedTodayAtShop,
     });
 
   } catch (error) {
@@ -310,6 +323,24 @@ router.post('/validate', auth, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'กรุณาระบุรหัสคูปองและร้านค้า'
+      });
+    }
+
+    // 1 คูปองต่อ user ต่อร้าน ต่อวัน (reset หลังเที่ยงคืน)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const endOfToday = new Date(today);
+    endOfToday.setDate(endOfToday.getDate() + 1);
+    const usedTodayAtShop = await Coupon.findOne({
+      userId,
+      shopId,
+      used: true,
+      usedAt: { $gte: today, $lt: endOfToday },
+    });
+    if (usedTodayAtShop) {
+      return res.status(400).json({
+        success: false,
+        message: 'ใช้คูปองร้านนี้แล้ววันนี้ ใช้ได้อีกครั้งหลังเที่ยงคืน',
       });
     }
 

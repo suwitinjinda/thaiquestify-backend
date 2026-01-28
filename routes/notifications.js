@@ -9,9 +9,17 @@ const Notification = require('../models/Notification');
  * @access  Private
  */
 router.get('/', auth, async (req, res) => {
+  let timeoutId = null;
   try {
     const userId = req.user.id || req.user._id;
     const { unread, limit = 50, type } = req.query;
+
+    // Add timeout protection for database queries
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error('Request timeout'));
+      }, 8000); // 8 second timeout
+    });
 
     const query = { userId };
     if (unread === 'true') {
@@ -21,27 +29,90 @@ router.get('/', auth, async (req, res) => {
       query.type = type;
     }
 
-    const notifications = await Notification.find(query)
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit));
+    // Sort by newest first (createdAt descending), then by unread status, then by priority
+    const priorityOrder = { high: 3, medium: 2, low: 1 };
+    
+    // Race between query and timeout
+    const notificationsPromise = Notification.find(query)
+      .sort({ 
+        createdAt: -1, // Newest first (primary sort)
+        read: 1, // Unread first (secondary sort)
+        priority: -1 // High priority first (tertiary sort)
+      })
+      .limit(parseInt(limit))
+      .lean();
+    
+    const notifications = await Promise.race([notificationsPromise, timeoutPromise]);
+    
+    // Clear timeout if query completed
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    
+    // Custom sort: newest first, then unread, then priority
+    const sortedNotifications = notifications.sort((a, b) => {
+      // Primary: Sort by date (newest first)
+      const dateDiff = new Date(b.createdAt) - new Date(a.createdAt);
+      if (dateDiff !== 0) return dateDiff;
+      
+      // Secondary: Unread first
+      if (!a.read && b.read) return -1;
+      if (a.read && !b.read) return 1;
+      
+      // Tertiary: High priority first
+      const aPriority = priorityOrder[a.priority] || 2;
+      const bPriority = priorityOrder[b.priority] || 2;
+      return bPriority - aPriority;
+    });
 
-    // Get unread count
-    const unreadCount = await Notification.countDocuments({
+    // Get unread count (with timeout protection)
+    const countPromise = Notification.countDocuments({
       userId,
       read: false
+    });
+    
+    const countTimeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Count timeout')), 5000);
+    });
+    
+    const unreadCount = await Promise.race([countPromise, countTimeoutPromise]).catch(() => {
+      // If count times out, return 0 instead of failing
+      console.warn('⚠️ Notification count query timed out, returning 0');
+      return 0;
     });
 
     res.json({
       success: true,
-      data: notifications,
+      data: sortedNotifications,
       unreadCount
     });
   } catch (error) {
+    // Clean up timeout
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    
     console.error('❌ Get notifications error:', error);
+    
+    // Handle timeout specifically
+    if (error.message === 'Request timeout' || error.message === 'Count timeout') {
+      return res.status(504).json({
+        success: false,
+        message: 'Request timeout - database query took too long',
+        error: 'TIMEOUT',
+        data: [],
+        unreadCount: 0
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'เกิดข้อผิดพลาดในการดึงการแจ้งเตือน',
-      error: error.message
+      error: error.message,
+      data: [],
+      unreadCount: 0
     });
   }
 });

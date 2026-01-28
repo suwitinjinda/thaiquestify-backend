@@ -2,6 +2,14 @@
 const mongoose = require('mongoose');
 
 const jobApplicationSchema = new mongoose.Schema({
+  // เลขที่ใบสมัคร (อ้างอิง) APP{YYYYMMDD}{sequence}
+  applicationNumber: {
+    type: String,
+    required: false,
+    unique: true,
+    sparse: true,
+    index: true,
+  },
   // งานที่สมัคร
   job: {
     type: mongoose.Schema.Types.ObjectId,
@@ -91,12 +99,36 @@ jobApplicationSchema.index({ worker: 1, status: 1 });
 jobApplicationSchema.index({ employer: 1, status: 1 });
 jobApplicationSchema.index({ status: 1, appliedAt: -1 });
 
+// Generate application number (run first)
+jobApplicationSchema.pre('save', async function (next) {
+  if (this.isNew && !this.applicationNumber) {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const count = await mongoose.model('JobApplication').countDocuments({
+        createdAt: { $gte: today, $lt: tomorrow },
+      });
+      const y = today.getFullYear();
+      const m = String(today.getMonth() + 1).padStart(2, '0');
+      const d = String(today.getDate()).padStart(2, '0');
+      const seq = String(count + 1).padStart(6, '0');
+      this.applicationNumber = `APP${y}${m}${d}${seq}`;
+    } catch (e) {
+      console.error('Error generating application number:', e);
+      this.applicationNumber = `APP${Date.now().toString().slice(-10)}`;
+    }
+  }
+  next();
+});
+
 // Prevent applying to same job twice
-jobApplicationSchema.pre('save', async function(next) {
+jobApplicationSchema.pre('save', async function (next) {
   if (this.isNew) {
     const existing = await mongoose.model('JobApplication').findOne({
       job: this.job,
-      worker: this.worker
+      worker: this.worker,
     });
     if (existing) {
       return next(new Error('คุณได้สมัครงานนี้แล้ว'));

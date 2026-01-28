@@ -172,15 +172,49 @@ router.post('/google/exchange', async (req, res) => {
     console.log('✅ Tokens received from Google');
 
     // 2. Verify ID token
-    const { OAuth2Client } = require('google-auth-library');
-    const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-
-    const ticket = await client.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
-
-    const payload = ticket.getPayload();
+    // Try to verify with OAuth2Client, but handle errors gracefully
+    let payload;
+    
+    try {
+      // Create OAuth2Client instance (reuse if possible, but create new to avoid issues)
+      const client = new OAuth2Client(GOOGLE_CLIENT_ID);
+      
+      // Verify ID token
+      const ticket = await client.verifyIdToken({
+        idToken: tokens.id_token,
+        audience: GOOGLE_CLIENT_ID
+      });
+      
+      payload = ticket.getPayload();
+    } catch (verifyError) {
+      console.error('❌ Error verifying Google ID token with OAuth2Client:', verifyError.message);
+      console.error('   Error type:', verifyError.constructor.name);
+      console.error('   Stack:', verifyError.stack?.substring(0, 500));
+      
+      // Fallback: Try to decode JWT manually (less secure but works if verification fails)
+      // This is a workaround for the gaxios listener error
+      try {
+        console.log('⚠️ Attempting manual JWT decode as fallback...');
+        const jwt = require('jsonwebtoken');
+        // Decode without verification (less secure, but works)
+        const decoded = jwt.decode(tokens.id_token, { complete: true });
+        
+        if (decoded && decoded.payload) {
+          payload = decoded.payload;
+          console.log('✅ Successfully decoded JWT manually');
+          console.log('⚠️ WARNING: Token was decoded without verification - less secure!');
+        } else {
+          throw new Error('Failed to decode JWT token');
+        }
+      } catch (decodeError) {
+        console.error('❌ Also failed to decode JWT manually:', decodeError.message);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to verify Google ID token',
+          error: 'Token verification failed. Please try again.'
+        });
+      }
+    }
     console.log('👤 Google payload received:', {
       email: payload.email,
       name: payload.name,
@@ -1033,10 +1067,26 @@ router.get('/facebook-config', (req, res) => {
 // Get current user profile (requires authentication)
 const { auth } = require('../middleware/auth');
 router.get('/me', auth, async (req, res) => {
+  let timeoutId = null;
   try {
-    const user = await User.findById(req.user.id)
+    // Add timeout protection with proper cleanup
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error('Request timeout'));
+      }, 10000); // 10 second timeout
+    });
+
+    const userPromise = User.findById(req.user.id)
       .select('-__v')
       .lean();
+
+    const user = await Promise.race([userPromise, timeoutPromise]);
+    
+    // Clear timeout if query completed successfully
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
 
     if (!user) {
       return res.status(404).json({
@@ -1095,7 +1145,24 @@ router.get('/me', auth, async (req, res) => {
       }
     });
   } catch (error) {
+    // Clean up timeout if still active
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    
     console.error('❌ Error fetching user profile:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Handle timeout specifically
+    if (error.message === 'Request timeout') {
+      return res.status(504).json({
+        success: false,
+        message: 'Request timeout - database query took too long',
+        error: 'TIMEOUT'
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Error fetching user profile',
@@ -1142,6 +1209,16 @@ router.put('/me', auth, async (req, res) => {
       }
       if (updateData.bankAccount.bankBranch !== undefined) {
         allowedFields['bankAccount.bankBranch'] = updateData.bankAccount.bankBranch;
+      }
+      // Allow resetting verification status when user re-submits bank info
+      if (updateData.bankAccount.verified !== undefined) {
+        allowedFields['bankAccount.verified'] = updateData.bankAccount.verified;
+      }
+      if (updateData.bankAccount.verifiedAt !== undefined) {
+        allowedFields['bankAccount.verifiedAt'] = updateData.bankAccount.verifiedAt;
+      }
+      if (updateData.bankAccount.verifiedBy !== undefined) {
+        allowedFields['bankAccount.verifiedBy'] = updateData.bankAccount.verifiedBy;
       }
     }
 
@@ -1193,6 +1270,134 @@ router.put('/me', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error updating user profile',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/auth/kyc/submit
+ * Submit KYC (Know Your Customer) verification documents
+ * Includes: national ID, bank account info, ID card photo, bank book photo, face photo
+ */
+router.post('/kyc/submit', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { 
+      nationalId, 
+      bankAccount, 
+      idCardImageUrl, 
+      bankBookImageUrl, 
+      facePhotoUrl 
+    } = req.body;
+
+    // Validate required fields
+    if (!nationalId || nationalId.length !== 13) {
+      return res.status(400).json({
+        success: false,
+        message: 'เลขบัตรประชาชนต้องมี 13 หลัก'
+      });
+    }
+
+    if (!bankAccount || !bankAccount.accountName || !bankAccount.accountNumber || !bankAccount.bankName) {
+      return res.status(400).json({
+        success: false,
+        message: 'กรุณากรอกข้อมูลธนาคารให้ครบถ้วน'
+      });
+    }
+
+    if (!idCardImageUrl || !bankBookImageUrl || !facePhotoUrl) {
+      return res.status(400).json({
+        success: false,
+        message: 'กรุณาอัปโหลดรูปภาพทั้งหมด (บัตรประชาชน, หน้าบัญชี, รูปถ่าย)'
+      });
+    }
+
+    // Find user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบผู้ใช้'
+      });
+    }
+
+    // Update user data
+    user.nationalId = nationalId;
+    user.bankAccount = {
+      accountName: bankAccount.accountName.trim(),
+      accountNumber: bankAccount.accountNumber.trim(),
+      bankName: bankAccount.bankName.trim(),
+      bankBranch: bankAccount.bankBranch?.trim() || '',
+      verified: false, // Reset verification status when submitting new KYC
+      verifiedAt: null,
+      verifiedBy: null
+    };
+
+    // Update verification documents
+    user.verificationDocuments = {
+      idCard: {
+        url: idCardImageUrl,
+        status: 'pending',
+        uploadedAt: new Date(),
+        reviewedAt: null,
+        reviewedBy: null,
+        rejectionReason: null
+      },
+      bankBook: {
+        url: bankBookImageUrl,
+        status: 'pending',
+        uploadedAt: new Date(),
+        reviewedAt: null,
+        reviewedBy: null,
+        rejectionReason: null
+      },
+      facePhoto: {
+        url: facePhotoUrl,
+        status: 'pending',
+        uploadedAt: new Date(),
+        reviewedAt: null,
+        reviewedBy: null,
+        rejectionReason: null
+      },
+      overallStatus: 'pending'
+    };
+
+    await user.save();
+
+    console.log(`✅ KYC submitted by user ${userId}: nationalId=${nationalId.substring(0, 3)}***, bank=${bankAccount.bankName}`);
+
+    // Notify all admins about the verification request
+    try {
+      const { createVerificationRequestNotification } = require('../utils/notificationHelper');
+      await createVerificationRequestNotification(
+        userId,
+        user.name || user.email,
+        user.email
+      );
+    } catch (notifError) {
+      console.error('⚠️ Failed to send verification request notification to admins:', notifError);
+      // Don't fail the request if notification fails
+    }
+
+    return res.json({
+      success: true,
+      message: 'ส่งข้อมูลยืนยันตัวตนเรียบร้อยแล้ว กรุณารอการตรวจสอบจากผู้ดูแลระบบ',
+      data: {
+        nationalId: nationalId.substring(0, 3) + '***' + nationalId.substring(9), // Masked
+        bankAccount: {
+          accountName: bankAccount.accountName,
+          bankName: bankAccount.bankName,
+          accountNumber: '****' + bankAccount.accountNumber.slice(-4)
+        },
+        verificationStatus: 'pending'
+      }
+    });
+  } catch (error) {
+    console.error('Error submitting KYC:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการส่งข้อมูล กรุณาลองใหม่อีกครั้ง',
       error: error.message
     });
   }

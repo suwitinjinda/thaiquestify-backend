@@ -7,6 +7,10 @@ const axios = require('axios'); // ต้องเพิ่มเพื่อเ
 // 1. ENVIRONMENT CONFIGURATION (MUST BE FIRST)
 require('dotenv').config({ path: '.env' });
 
+// Scalability & Performance Middleware
+const compression = require('./middleware/compression');
+const { apiLimiter, authenticatedLimiter, authLimiter, uploadLimiter, orderLimiter } = require('./middleware/rateLimiter');
+
 const questRoutes = require('./routes/quests');
 const streakRoutes = require('./routes/streakRoutes');
 
@@ -28,6 +32,20 @@ console.log('   PORT:', process.env.PORT || 5000);
 
 // CORS (Simplest way to allow all origins)
 app.use(cors());
+
+// Response Compression (reduce bandwidth usage by 60-80%)
+app.use(compression);
+
+// Rate Limiting (protect API from abuse)
+// General API rate limiter: 100 requests per 15 minutes per IP (or 1000 in development)
+// Note: Authenticated users (with token) skip this and use authenticatedLimiter instead
+app.use('/api/', apiLimiter);
+// Strict rate limiter for auth endpoints: 5 requests per 15 minutes (or 20 in development)
+app.use('/api/auth', authLimiter);
+// Rate limiter for order creation: 20 orders per hour (or 100 in development)
+app.use('/api/orders', orderLimiter);
+// Note: authenticatedLimiter should be applied to protected routes AFTER auth middleware
+// Example: router.get('/protected', auth, authenticatedLimiter, handler)
 
 // Request logging middleware (for debugging OAuth callbacks)
 app.use((req, res, next) => {
@@ -61,6 +79,9 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Static file serving for uploads
 app.use('/uploads', express.static('uploads'));
 
+// Static file serving for public files (Privacy Policy, etc.)
+app.use(express.static('public'));
+
 // Logging Middleware (for audit logs)
 const { requestLogger, errorLogger } = require('./middleware/loggingMiddleware');
 app.use(requestLogger);
@@ -74,9 +95,28 @@ const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/thaiqu
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 10000, // 10 seconds timeout for initial connection
+  socketTimeoutMS: 45000, // 45 seconds timeout for queries
 })
   .then(() => console.log('✅ Connected to MongoDB'))
-  .catch(err => console.error('❌ MongoDB connection error:', err));
+  .catch(err => {
+    console.error('❌ MongoDB connection error:', err);
+    // Don't crash server - it will retry on next request
+  });
+
+// Handle MongoDB connection events
+mongoose.connection.on('error', (err) => {
+  console.error('❌ MongoDB connection error:', err);
+  // Don't crash - connection will retry
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.warn('⚠️ MongoDB disconnected - will reconnect on next request');
+});
+
+mongoose.connection.on('reconnected', () => {
+  console.log('✅ MongoDB reconnected');
+});
 
 
 // ===========================================
@@ -198,6 +238,14 @@ app.use('/api', dashboardRoutes);
 const adminRoutes = require('./routes/admin');
 app.use('/api/v2/admin', adminRoutes);
 
+// Verification Documents Routes (User)
+const userVerificationDocumentsRoutes = require('./routes/userVerificationDocuments');
+app.use('/api/user/verification-documents', userVerificationDocumentsRoutes);
+
+// Verification Documents Routes (Admin)
+const adminVerificationDocumentsRoutes = require('./routes/adminVerificationDocuments');
+app.use('/api/admin/verification-documents', adminVerificationDocumentsRoutes);
+
 // Activity Logs Routes
 const activityLogsRoutes = require('./routes/activityLogs');
 app.use('/api/v2/activity-logs', activityLogsRoutes);
@@ -208,6 +256,14 @@ app.use('/api/users', usersRoutes);
 
 // Users V2 Routes (for v2 API endpoints)
 app.use('/api/v2/users', usersRoutes);
+
+// Points Routes
+const pointsRoutes = require('./routes/points');
+app.use('/api/points', pointsRoutes);
+
+// Webhook Routes (must be before body parser for raw body)
+const webhookRoutes = require('./routes/webhooks');
+app.use('/api/webhooks', webhookRoutes);
 
 // Rewards Routes
 const rewardsRoutes = require('./routes/rewards');
@@ -1224,14 +1280,21 @@ function setupOrderCancellationCron() {
       }
       
       // Then schedule to run every 24 hours
-      setInterval(async () => {
+      const orderCancellationInterval = setInterval(async () => {
         console.log('🔄 Running scheduled order cancellation (daily at 00:01 AM)...');
         try {
           await orderCancellationService.cancelAgingOrders();
         } catch (error) {
           console.error('❌ Error in scheduled order cancellation:', error);
+          // Don't let errors crash the interval - continue running
         }
       }, 24 * 60 * 60 * 1000); // Every 24 hours
+      
+      // Store interval reference for potential cleanup
+      if (global.orderCancellationInterval) {
+        clearInterval(global.orderCancellationInterval);
+      }
+      global.orderCancellationInterval = orderCancellationInterval;
     }, msUntilMidnight);
   }
   
@@ -1268,13 +1331,20 @@ function setupDeliveryRequestTimeoutCheck() {
   }, 10000); // Run 10 seconds after startup
   
   // Then run every minute
-  setInterval(async () => {
+  const deliveryInterval = setInterval(async () => {
     try {
       await deliveryAssignmentService.checkAndCancelOldPendingRequests();
     } catch (error) {
       console.error('❌ Error in delivery request timeout check:', error);
+      // Don't let errors crash the interval - continue running
     }
   }, 60 * 1000); // Every 1 minute
+  
+  // Store interval reference for potential cleanup
+  if (global.deliveryInterval) {
+    clearInterval(global.deliveryInterval);
+  }
+  global.deliveryInterval = deliveryInterval;
   
   console.log('⏰ Delivery request timeout check scheduled: Every 1 minute');
 }
@@ -1314,6 +1384,27 @@ function setupCancelledRequestsCleanup() {
 
 // Setup cancelled requests cleanup
 setupCancelledRequestsCleanup();
+
+// ===========================================
+// 9.3. ERROR HANDLING FOR INTERVALS
+// ===========================================
+// Prevent unhandled promise rejections from crashing the server
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise);
+  console.error('❌ Reason:', reason);
+  if (reason instanceof Error) {
+    console.error('❌ Error stack:', reason.stack);
+  }
+  // Don't exit - just log the error to prevent server crashes
+  // The error is logged but server continues running
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  console.error('❌ Error stack:', error.stack);
+  // Don't exit - just log the error to prevent server crashes
+  // In production, you might want to gracefully shutdown, but for now keep running
+});
 
 // ===========================================
 // 10. START SERVER

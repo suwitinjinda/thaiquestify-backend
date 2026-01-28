@@ -17,27 +17,18 @@ const { provinceGroups, getRegionByProvince, getProvincesByRegion } = require('.
 // Get quest statistics by region
 router.get('/stats/by-region', async (req, res) => {
   try {
-    console.log('📊 Fetching REAL quest stats by region from database');
-    console.log('🗺️ Using province groups from thaiProvinces.js');
-
     const stats = {};
     
-    // Get all active quests with shop information
     const activeQuests = await Quest.find({
       status: 'active',
       endDate: { $gte: new Date() }
     })
-    .populate('shop', 'province shopName') // Changed from shopId to shop
+    .populate('shop', 'province shopName')
     .lean();
 
-    console.log(`📊 Found ${activeQuests.length} active quests total`);
-
-    // Get all active shops
     const activeShops = await Shop.find({
       status: 'active'
     }).lean();
-
-    console.log(`🏪 Found ${activeShops.length} active shops total`);
 
     // Initialize stats for all regions
     Object.keys(provinceGroups).forEach(region => {
@@ -94,11 +85,8 @@ router.get('/stats/by-region', async (req, res) => {
       if (popularProvinces.length > 0) {
         stats[region].popularProvinces = popularProvinces;
       } else {
-        // Otherwise use the first 3 provinces from the region
         stats[region].popularProvinces = provinces.slice(0, 100);
       }
-
-      console.log(`✅ ${region}: ${stats[region].activeQuests} quests, ${stats[region].totalShops} shops, popular: ${stats[region].popularProvinces.join(', ')}`);
     }
 
     res.json({ 

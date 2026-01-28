@@ -2,9 +2,19 @@
 
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
 
-// Privacy Policy Page (HTML)
+// Privacy Policy Page (HTML) - Serve from public folder
 router.get('/privacy-policy', (req, res) => {
+  const filePath = path.join(__dirname, '../public/privacy-policy.html');
+  
+  // Check if file exists
+  if (fs.existsSync(filePath)) {
+    return res.sendFile(filePath);
+  }
+  
+  // Fallback to inline HTML if file doesn't exist
   const html = `
     <!DOCTYPE html>
     <html lang="th">

@@ -169,7 +169,7 @@ async function getSignedUrl(fileUrl) {
       fileName = fileUrl;
     }
 
-    if (!fileName) {
+    if (!fileName || !fileName.length) {
       console.warn('⚠️ Could not extract fileName from URL:', fileUrl);
       return fileUrl;
     }
@@ -177,21 +177,23 @@ async function getSignedUrl(fileUrl) {
     const bucket = storage.bucket(BUCKET_NAME);
     const file = bucket.file(fileName);
 
-    // Check if file exists (optional, but helps with debugging)
-    const [exists] = await file.exists();
-    if (!exists) {
-      console.warn(`⚠️ File does not exist in bucket: ${fileName}`);
-      return fileUrl; // Return original URL if file doesn't exist
+    // Generate signed URL directly — skip exists() to avoid extra GCP round-trip per file
+    try {
+      const [signedUrl] = await file.getSignedUrl({
+        action: 'read',
+        expires: Date.now() + 365 * 24 * 60 * 60 * 1000, // 1 year from now
+      });
+      return signedUrl;
+    } catch (signError) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn(`⚠️ File missing or sign failed: ${fileName.substring(0, 60)}…`);
+      }
+      // If input was a path (e.g. shops/xxx/y.jpg), return public URL so clients can try loading it when bucket allows public read
+      if (fileName === baseUrl && (baseUrl.startsWith('shops/') || baseUrl.startsWith('tourist-attractions/'))) {
+        return `https://storage.googleapis.com/${BUCKET_NAME}/${fileName}`;
+      }
+      return fileUrl;
     }
-
-    // Generate signed URL valid for 1 year
-    const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 365 * 24 * 60 * 60 * 1000, // 1 year from now
-    });
-
-    console.log(`✅ Generated signed URL for: ${fileName.substring(0, 50)}...`);
-    return signedUrl;
   } catch (error) {
     console.error('❌ Error generating signed URL:', error);
     console.error('   URL:', fileUrl);
@@ -213,7 +215,6 @@ async function getSignedUrls(imageUrls) {
   try {
     const signedUrlPromises = imageUrls.map(url => getSignedUrl(url));
     const signedUrls = await Promise.all(signedUrlPromises);
-    console.log(`✅ Generated ${signedUrls.length} signed URLs`);
     return signedUrls;
   } catch (error) {
     console.error('❌ Error generating signed URLs:', error);
@@ -243,10 +244,29 @@ async function deleteImage(fileUrl) {
   }
 }
 
+/**
+ * Upload verification document (ID card, bank book, face photo) to GCP
+ * @param {Buffer} imageBuffer - Image file buffer
+ * @param {String} userId - User ID
+ * @param {String} documentType - 'id_card', 'bank_book', or 'face_photo'
+ * @param {String} mimeType - MIME type (e.g., 'image/jpeg')
+ * @returns {Promise<String>} Public URL of uploaded image
+ */
+async function uploadVerificationDocument(imageBuffer, userId, documentType, mimeType = 'image/jpeg') {
+  try {
+    const fileName = `verification-documents/${userId}/${documentType}_${Date.now()}.${getFileExtension(mimeType)}`;
+    return await uploadImage(imageBuffer, fileName, mimeType);
+  } catch (error) {
+    console.error('❌ Error uploading verification document:', error);
+    throw error;
+  }
+}
+
 module.exports = {
   uploadImage,
   uploadShopImages,
   uploadTouristAttractionImages,
+  uploadVerificationDocument,
   deleteImage,
   getSignedUrl,
   getSignedUrls,

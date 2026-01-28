@@ -5,6 +5,8 @@ const { auth } = require('../middleware/auth');
 const partnerController = require('../controllers/partnerController');
 const Partner = require('../models/Partner');
 const User = require('../models/User');
+const ShopFeeSplitRecord = require('../models/ShopFeeSplitRecord');
+const RewardRedemption = require('../models/RewardRedemption');
 
 // Partner Registration Route (requires auth)
 router.post('/register', auth, async (req, res) => {
@@ -198,6 +200,110 @@ router.put('/me', auth, async (req, res) => {
     res.status(500).json({ 
       success: false, 
       message: error.message || 'Failed to update partner information' 
+    });
+  }
+});
+
+/**
+ * GET /api/v2/partner/commission-history
+ * Get partner's commission history from ShopFeeSplitRecord
+ */
+router.get('/commission-history', auth, async (req, res) => {
+  try {
+    const userId = req.user?._id || req.user?.id;
+    
+    if (!userId) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'User authentication required' 
+      });
+    }
+
+    // Check if user is partner
+    if (!req.user.partnerId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Partner privileges required.'
+      });
+    }
+
+    // Find partner document
+    const partner = await Partner.findOne({ userId });
+    const partnerRefId = partner?._id || null;
+
+    // Query ShopFeeSplitRecord for this partner
+    const matchConditions = [
+      { partnerId: userId, partnerShare: { $gt: 0 } }
+    ];
+    if (partnerRefId) {
+      matchConditions.push({ partnerRef: partnerRefId, partnerShare: { $gt: 0 } });
+    }
+
+    const commissionRecords = await ShopFeeSplitRecord.find({ $or: matchConditions })
+      .populate('shop', 'shopName shopId')
+      .populate('order', 'orderNumber')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Format commission records with shopName and orderNumber
+    const formattedRecords = commissionRecords.map(record => ({
+      ...record,
+      shopName: record.shop?.shopName || record.shopName || '',
+      orderNumber: record.order?.orderNumber || record.orderNumber || ''
+    }));
+
+    res.json({
+      success: true,
+      data: formattedRecords
+    });
+  } catch (error) {
+    console.error('❌ Error fetching partner commission history:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch commission history',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/partners/reward-history
+ * Get partner's reward history from RewardRedemption
+ */
+router.get('/reward-history', auth, async (req, res) => {
+  try {
+    const userId = req.user?._id || req.user?.id;
+    
+    if (!userId) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'User authentication required' 
+      });
+    }
+
+    // Check if user is partner
+    if (!req.user.partnerId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Partner privileges required.'
+      });
+    }
+
+    // Query RewardRedemption for this partner
+    const rewardRecords = await RewardRedemption.find({ user: userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      data: rewardRecords
+    });
+  } catch (error) {
+    console.error('❌ Error fetching partner reward history:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch reward history',
+      error: error.message
     });
   }
 });

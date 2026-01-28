@@ -9,6 +9,7 @@ const Order = require('../models/Order');
 const { auth } = require('../middleware/auth');
 const { adminAuth } = require('../middleware/adminAuth');
 const deliveryAssignmentService = require('../services/deliveryAssignmentService');
+const { createDeliveryStatusNotification, createRiderEarningsNotification } = require('../utils/notificationHelper');
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -993,56 +994,62 @@ router.put('/:id/status', auth, upload.single('deliveryPhoto'), async (req, res)
       if (deliveryPhotoUrl) {
         delivery.deliveryPhoto = deliveryPhotoUrl;
       }
-      // Update order status
+      // Update order status (shop delivery fee already deducted when rider accepted + shop confirmed)
       if (delivery.order) {
-        const order = await Order.findByIdAndUpdate(delivery.order, {
-          status: 'completed',
-        }, { new: true }).populate('shop');
-
-        // Deduct points from shop for delivery order
-        if (order && order.orderType === 'delivery' && order.shop) {
-          try {
-            const shopDeliveryFee = await QuestSettings.getSetting('shop_delivery_order_fee') || 5;
-            
-            // Get shop owner
-            const shop = await Shop.findById(order.shop._id || order.shop).populate('user');
-            if (shop && shop.user) {
-              const shopOwner = shop.user;
-              
-              // Check if shop owner has enough points
-              if (shopOwner.points >= shopDeliveryFee) {
-                // Deduct points from shop owner
-                shopOwner.points -= shopDeliveryFee;
-                await shopOwner.save();
-
-                // Create point transaction record
-                await PointTransaction.create({
-                  userId: shopOwner._id,
-                  type: 'deduction',
-                  amount: -shopDeliveryFee,
-                  description: `ค่าธรรมเนียม Order ส่งที่บ้าน (Order: ${order.orderNumber || order._id})`,
-                });
-
-                console.log(`✅ Deducted ${shopDeliveryFee} points from shop owner for delivery order ${order._id}`);
-              } else {
-                console.warn(`⚠️ Shop owner ${shopOwner._id} does not have enough points (${shopOwner.points} < ${shopDeliveryFee})`);
-                // Still complete the order, but log the warning
-              }
-            }
-          } catch (error) {
-            console.error('Error deducting points from shop for delivery order:', error);
-            // Don't fail the delivery completion if point deduction fails
-          }
-        }
+        await Order.findByIdAndUpdate(delivery.order, { status: 'completed' });
       }
     }
     await delivery.save();
 
+    // Create notifications for status changes
     const populatedDelivery = await Delivery.findById(delivery._id)
       .populate('order', 'orderNumber subtotal total status')
       .populate('shop', 'shopName shopId phone address coordinates')
       .populate('customer', 'name email phone')
       .populate('rider', 'name email phone');
+
+    // Send notifications based on status
+    if (delivery.rider && ['picked_up', 'on_the_way', 'delivered', 'cancelled'].includes(status)) {
+      try {
+        const riderUserId = delivery.rider._id || delivery.rider;
+        const statusMessages = {
+          picked_up: 'คุณได้รับอาหารจากร้านค้าแล้ว',
+          on_the_way: 'คุณกำลังจัดส่งอาหาร',
+          delivered: 'จัดส่งสำเร็จแล้ว',
+          cancelled: 'งานจัดส่งถูกยกเลิก',
+        };
+        
+        await createDeliveryStatusNotification(
+          riderUserId,
+          delivery._id.toString(),
+          status,
+          delivery.deliveryNumber || delivery._id.toString(),
+          statusMessages[status] || `สถานะ: ${status}`
+        );
+      } catch (notifError) {
+        console.error('⚠️ Failed to create delivery status notification:', notifError);
+      }
+    }
+
+    // If delivered, create earnings notification for rider
+    if (status === 'delivered' && delivery.rider) {
+      try {
+        const riderUserId = delivery.rider._id || delivery.rider;
+        const deliveryRequest = await DeliveryRequest.findOne({ delivery: delivery._id });
+        const riderFee = deliveryRequest?.riderFee || 0;
+        
+        if (riderFee > 0) {
+          await createRiderEarningsNotification(
+            riderUserId,
+            riderFee,
+            'delivery_completed',
+            `คุณได้รับค่าจ้าง ${riderFee} บาท จากการจัดส่ง #${delivery.deliveryNumber || delivery._id}`
+          );
+        }
+      } catch (earningsNotifError) {
+        console.error('⚠️ Failed to create rider earnings notification:', earningsNotifError);
+      }
+    }
 
     res.json({
       success: true,
@@ -1178,24 +1185,16 @@ router.get('/queue', auth, async (req, res) => {
       .limit(parseInt(limit))
       .skip(skip);
 
-    // Calculate delivery fee and total price for each request
+    // Use fee from order (requestedDeliveryFee/riderFee = from road distance when API key set); fallback recalc from request.distance
     const requestsWithPricing = await Promise.all(requests.map(async (request) => {
       const requestObj = request.toObject();
-      
-      // Calculate distance if shop coordinates available
-      if (request.shop?.coordinates && request.distance) {
-        const deliveryFee = await deliveryAssignmentService.calculateDeliveryFee(request.distance);
-        // Use subtotal (food cost only) instead of total (which includes delivery fee)
-        const foodCost = request.order?.subtotal || 0;
-        // Total price should match order.total (which is subtotal + deliveryFee - discountAmount)
-        // Use order.total as the source of truth
-        const totalPrice = request.order?.total || (foodCost + deliveryFee);
-        
-        requestObj.deliveryFee = deliveryFee;
-        requestObj.foodCost = foodCost;
-        requestObj.totalPrice = totalPrice;
-      }
-      
+      const deliveryFee = (request.requestedDeliveryFee != null ? request.requestedDeliveryFee : request.riderFee) ??
+        (request.distance != null ? await deliveryAssignmentService.calculateDeliveryFee(request.distance) : 0);
+      const foodCost = request.order?.subtotal || 0;
+      const totalPrice = request.order?.total ?? (foodCost + deliveryFee);
+      requestObj.deliveryFee = deliveryFee;
+      requestObj.foodCost = foodCost;
+      requestObj.totalPrice = totalPrice;
       return requestObj;
     }));
 
@@ -1493,7 +1492,7 @@ router.post('/:requestId/reject', auth, async (req, res) => {
 
 /**
  * @route   POST /api/deliveries/:deliveryId/pickup
- * @desc    Rider picks up order (shop pays rider)
+ * @desc    Rider picks up order (no payment - removed as per user request)
  * @access  Private (Rider)
  */
 router.post('/:deliveryId/pickup', auth, async (req, res) => {

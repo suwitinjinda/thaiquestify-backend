@@ -58,6 +58,10 @@ const cashRewardSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
     index: true
+  },
+  metadata: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
   }
 }, {
   timestamps: true

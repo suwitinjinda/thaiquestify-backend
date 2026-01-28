@@ -1,6 +1,8 @@
 // services/notificationService.js - Push notification service for delivery assignments
 const User = require('../models/User');
 const { Expo } = require('expo-server-sdk');
+// Lazy load notificationHelper functions to avoid circular dependency
+// (notificationHelper imports from this file)
 
 // Create a new Expo SDK client
 const expo = new Expo();
@@ -83,6 +85,21 @@ async function sendDeliveryAssignmentNotifications(riders, deliveryRequest) {
   try {
     const notifications = [];
     
+    // Get shop info for notification
+    const Order = require('../models/Order');
+    const Shop = require('../models/Shop');
+    let shopName = 'ร้านค้า';
+    let customerAddress = '';
+    
+    if (deliveryRequest.order) {
+      const order = await Order.findById(deliveryRequest.order).populate('shop');
+      if (order?.shop) {
+        const shop = await Shop.findById(order.shop);
+        shopName = shop?.name || shopName;
+      }
+      customerAddress = order?.deliveryAddress || '';
+    }
+    
     for (const riderData of riders) {
       const rider = riderData.rider;
       if (!rider.user) continue;
@@ -99,7 +116,27 @@ async function sendDeliveryAssignmentNotifications(riders, deliveryRequest) {
         priority: deliveryRequest.priority
       };
 
+      // Send push notification
       const result = await sendNotificationToUser(userId, title, body, data);
+      
+      // Create database notification
+      try {
+        // Lazy load to avoid circular dependency
+        const { createDeliveryAssignmentNotification } = require('../utils/notificationHelper');
+        await createDeliveryAssignmentNotification(
+          userId,
+          deliveryRequest._id.toString(),
+          deliveryRequest.requestNumber,
+          riderData.totalDistance,
+          deliveryRequest.riderFee,
+          shopName,
+          customerAddress
+        );
+      } catch (dbNotifError) {
+        console.error('⚠️ Failed to create database notification:', dbNotifError);
+        // Don't fail the whole operation if DB notification fails
+      }
+      
       notifications.push({
         riderId: rider._id,
         userId,
@@ -136,7 +173,25 @@ async function sendDeliveryAssignedNotification(deliveryRequest, rider) {
       requestNumber: deliveryRequest.requestNumber
     };
 
-    return await sendNotificationToUser(userId, title, body, data);
+    // Send push notification
+    const result = await sendNotificationToUser(userId, title, body, data);
+    
+    // Create database notification
+    try {
+      // Lazy load to avoid circular dependency
+      const { createDeliveryStatusNotification } = require('../utils/notificationHelper');
+      await createDeliveryStatusNotification(
+        userId,
+        deliveryRequest.delivery?.toString() || deliveryRequest._id.toString(),
+        'assigned',
+        deliveryRequest.requestNumber,
+        body
+      );
+    } catch (dbNotifError) {
+      console.error('⚠️ Failed to create database notification:', dbNotifError);
+    }
+    
+    return result;
   } catch (error) {
     console.error('Error sending assigned notification:', error);
     return { success: false, error: error.message };

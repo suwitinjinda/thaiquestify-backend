@@ -4,6 +4,10 @@ const DeliveryRequest = require('../models/DeliveryRequest');
 const Delivery = require('../models/Delivery');
 const Order = require('../models/Order');
 const Shop = require('../models/Shop');
+const PointTransaction = require('../models/PointTransaction');
+const QuestSettings = require('../models/QuestSettings');
+const Partner = require('../models/Partner');
+const ShopFeeSplitRecord = require('../models/ShopFeeSplitRecord');
 const { auth } = require('../middleware/auth');
 const mongoose = require('mongoose');
 
@@ -263,15 +267,88 @@ router.post('/:id/accept', auth, async (req, res) => {
       });
     }
 
+    let order = await Order.findById(request.order);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'ไม่พบคำสั่งซื้อ' });
+    }
+    if (order.status !== 'confirmed') {
+      return res.status(400).json({
+        success: false,
+        message: 'รอร้านยืนยันคำสั่งซื้อก่อน Rider จึงจะรับงานได้',
+      });
+    }
+    if (order.shopDeliveryFeeDeducted) {
+      return res.status(400).json({
+        success: false,
+        message: 'ค่าธรรมเนียมหักแล้ว ไม่สามารถรับงานซ้ำได้',
+      });
+    }
+
+    const shop = await Shop.findById(request.shop).populate('user');
+    if (!shop || !shop.user) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูลร้านหรือเจ้าของร้าน',
+      });
+    }
+    const shopOwner = shop.user;
+    const fee = (await QuestSettings.getSetting('shop_delivery_order_fee')) || 5;
+    if (shopOwner.points < fee) {
+      return res.status(400).json({
+        success: false,
+        message: 'ร้านคะแนนไม่พอ ไม่สามารถให้ Rider รับงานได้',
+      });
+    }
+
+    shopOwner.points -= fee;
+    await shopOwner.save();
+    await PointTransaction.create({
+      userId: shopOwner._id,
+      type: 'deduction',
+      amount: -fee,
+      description: `ค่าธรรมเนียม Order ส่งที่บ้าน (Order: ${order.orderNumber || order._id})`,
+      relatedId: order._id,
+      relatedModel: 'Order',
+      remainingPoints: shopOwner.points,
+    });
+    order.shopDeliveryFeeDeducted = true;
+    await order.save();
+
+    // Fee split: partner_shop_commission_rate % ของ Fee ให้ Partner, ที่เหลือ Platform. Keep record for stats.
+    const rate = shop.partnerId ? ((await QuestSettings.getSetting('partner_shop_commission_rate')) || 20) : 0;
+    const partnerShare = Math.round((fee * rate) / 100);
+    const platformShare = fee - partnerShare;
+    let partnerRef = null;
+    if (shop.partnerId && partnerShare > 0) {
+      const partner = await Partner.findOne({ userId: shop.partnerId });
+      if (partner) {
+        partner.pendingCommission = (partner.pendingCommission || 0) + partnerShare;
+        await partner.save();
+        partnerRef = partner._id;
+        console.log(`💰 Fee split: ${fee} pts → Partner ${partnerShare} pts (${rate}%), Platform ${platformShare} pts`);
+      }
+    }
+    await ShopFeeSplitRecord.create({
+      shop: shop._id,
+      order: order._id,
+      feeType: 'delivery',
+      feeAmount: fee,
+      partnerShare,
+      platformShare,
+      commissionRatePercent: shop.partnerId ? rate : null,
+      partnerId: shop.partnerId || null,
+      partnerRef,
+      orderNumber: order.orderNumber || '',
+      shopName: shop.shopName || '',
+    });
+
     // Assign rider
     request.rider = userId;
     request.status = 'accepted';
     request.acceptedAt = new Date();
     await request.save();
 
-    // Create delivery record
-    const order = await Order.findById(request.order);
-    const shop = await Shop.findById(request.shop);
+    // Create delivery record (order, shop already fetched)
 
     const delivery = new Delivery({
       order: request.order,

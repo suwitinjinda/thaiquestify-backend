@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const Shop = require('../models/Shop'); // ADD THIS IMPORT
+const Quest = require('../models/Quest');
 const QuestSettings = require('../models/QuestSettings');
 const User = require('../models/User');
 const { auth } = require('../middleware/auth');
@@ -228,6 +229,316 @@ router.get(
   shopController.getShopStatistics
 );
 
+// Get shop revenue statistics (daily/monthly/yearly)
+router.get('/admin/shops/revenue-statistics', auth, adminAuth, async (req, res) => {
+  try {
+    const { period = 'daily' } = req.query; // 'daily', 'monthly', 'yearly'
+    const Order = require('../models/Order');
+    
+    const now = new Date();
+    let startDate, endDate, groupFormat;
+    
+    // Set date range and aggregation format based on period
+    if (period === 'daily') {
+      // Last 30 days
+      startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 30);
+      endDate = now;
+      groupFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' }
+      };
+    } else if (period === 'monthly') {
+      // Last 12 months
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 12);
+      endDate = now;
+      groupFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' }
+      };
+    } else if (period === 'yearly') {
+      // Last 5 years
+      startDate = new Date(now);
+      startDate.setFullYear(startDate.getFullYear() - 5);
+      endDate = now;
+      groupFormat = {
+        year: { $year: '$createdAt' }
+      };
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid period. Must be: daily, monthly, or yearly'
+      });
+    }
+    
+    // Aggregate revenue by period
+    const revenueData = await Order.aggregate([
+      {
+        $match: {
+          status: 'completed',
+          paymentStatus: 'paid',
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: groupFormat,
+          totalRevenue: { $sum: '$total' },
+          orderCount: { $sum: 1 },
+          avgOrderValue: { $avg: '$total' }
+        }
+      },
+      {
+        $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 }
+      }
+    ]);
+    
+    // Format data for frontend
+    const formattedData = revenueData.map(item => {
+      let label;
+      if (period === 'daily') {
+        const date = new Date(item._id.year, item._id.month - 1, item._id.day);
+        label = date.toLocaleDateString('th-TH', { day: '2-digit', month: 'short' });
+      } else if (period === 'monthly') {
+        const date = new Date(item._id.year, item._id.month - 1);
+        label = date.toLocaleDateString('th-TH', { month: 'long', year: 'numeric' });
+      } else {
+        label = `${item._id.year}`;
+      }
+      
+      return {
+        label,
+        revenue: item.totalRevenue,
+        orderCount: item.orderCount,
+        avgOrderValue: Math.round(item.avgOrderValue * 100) / 100
+      };
+    });
+    
+    // Calculate summary
+    const totalRevenue = formattedData.reduce((sum, item) => sum + item.revenue, 0);
+    const totalOrders = formattedData.reduce((sum, item) => sum + item.orderCount, 0);
+    const avgRevenue = formattedData.length > 0 ? totalRevenue / formattedData.length : 0;
+    
+    res.json({
+      success: true,
+      data: {
+        period,
+        data: formattedData,
+        summary: {
+          totalRevenue,
+          totalOrders,
+          avgRevenue: Math.round(avgRevenue * 100) / 100,
+          avgOrderValue: totalOrders > 0 ? Math.round((totalRevenue / totalOrders) * 100) / 100 : 0
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get revenue statistics error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
+// Get shop revenue statistics for specific shop (shop owner only)
+router.get('/shops/:shopId/revenue-statistics', auth, async (req, res) => {
+  try {
+    const { shopId } = req.params;
+    const { period = 'daily' } = req.query; // 'daily', 'monthly', 'yearly'
+    const Order = require('../models/Order');
+    const Shop = require('../models/Shop');
+    const mongoose = require('mongoose');
+    
+    // Find shop and verify ownership
+    let shop;
+    if (mongoose.Types.ObjectId.isValid(shopId) && shopId.length === 24) {
+      shop = await Shop.findById(shopId);
+    } else {
+      shop = await Shop.findOne({ shopId: shopId });
+    }
+    
+    if (!shop) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบร้านค้า'
+      });
+    }
+    
+    // Verify ownership: check if user owns this shop
+    const userId = req.user.id || req.user._id;
+    const isOwner = shop.user?.toString() === userId.toString() || 
+                    shop.ownerEmail === req.user.email ||
+                    (shop.partnerId && req.user.partnerId && shop.partnerId.toString() === req.user.partnerId.toString());
+    
+    if (!isOwner && req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'คุณไม่มีสิทธิ์เข้าถึงสถิติของร้านค้านี้'
+      });
+    }
+    
+    // Get shop ObjectId for matching orders
+    const shopObjectId = shop._id;
+    
+    const now = new Date();
+    let startDate, endDate, groupFormat;
+    
+    // Set date range and aggregation format based on period
+    if (period === 'daily') {
+      startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 30);
+      endDate = now;
+      groupFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' }
+      };
+    } else if (period === 'monthly') {
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 12);
+      endDate = now;
+      groupFormat = {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' }
+      };
+    } else if (period === 'yearly') {
+      startDate = new Date(now);
+      startDate.setFullYear(startDate.getFullYear() - 5);
+      endDate = now;
+      groupFormat = {
+        year: { $year: '$createdAt' }
+      };
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid period. Must be: daily, monthly, or yearly'
+      });
+    }
+    
+    // Aggregate revenue by period for this specific shop - แยกตาม orderType (dine_in vs delivery)
+    const revenueData = await Order.aggregate([
+      {
+        $match: {
+          shop: shopObjectId,
+          paymentStatus: 'paid', // นับเฉพาะที่จ่ายเงินเสร็จแล้ว
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: groupFormat, // Group by period only (not by orderType)
+          totalRevenue: { $sum: '$total' },
+          orderCount: { $sum: 1 },
+          avgOrderValue: { $avg: '$total' },
+          dineInRevenue: {
+            $sum: {
+              $cond: [
+                { $or: [{ $eq: ['$orderType', 'dine_in'] }, { $eq: ['$orderType', null] }] },
+                '$total',
+                0
+              ]
+            }
+          },
+          dineInCount: {
+            $sum: {
+              $cond: [
+                { $or: [{ $eq: ['$orderType', 'dine_in'] }, { $eq: ['$orderType', null] }] },
+                1,
+                0
+              ]
+            }
+          },
+          deliveryRevenue: {
+            $sum: {
+              $cond: [{ $eq: ['$orderType', 'delivery'] }, '$total', 0]
+            }
+          },
+          deliveryCount: {
+            $sum: {
+              $cond: [{ $eq: ['$orderType', 'delivery'] }, 1, 0]
+            }
+          }
+        }
+      },
+      {
+        $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 }
+      }
+    ]);
+    
+    // Format data for frontend
+    const formattedData = revenueData.map(item => {
+      let label;
+      if (period === 'daily') {
+        const date = new Date(item._id.year, item._id.month - 1, item._id.day);
+        label = date.toLocaleDateString('th-TH', { day: '2-digit', month: 'short' });
+      } else if (period === 'monthly') {
+        const date = new Date(item._id.year, item._id.month - 1);
+        label = date.toLocaleDateString('th-TH', { month: 'long', year: 'numeric' });
+      } else {
+        label = `${item._id.year}`;
+      }
+      
+      return {
+        label,
+        revenue: item.totalRevenue,
+        orderCount: item.orderCount,
+        avgOrderValue: Math.round(item.avgOrderValue * 100) / 100,
+        dineInRevenue: item.dineInRevenue || 0,
+        dineInCount: item.dineInCount || 0,
+        deliveryRevenue: item.deliveryRevenue || 0,
+        deliveryCount: item.deliveryCount || 0,
+        dineInAvgOrderValue: item.dineInCount > 0 ? Math.round((item.dineInRevenue / item.dineInCount) * 100) / 100 : 0,
+        deliveryAvgOrderValue: item.deliveryCount > 0 ? Math.round((item.deliveryRevenue / item.deliveryCount) * 100) / 100 : 0
+      };
+    });
+    
+    // Calculate summary - แยกตาม orderType
+    const totalRevenue = formattedData.reduce((sum, item) => sum + item.revenue, 0);
+    const totalOrders = formattedData.reduce((sum, item) => sum + item.orderCount, 0);
+    const totalDineInRevenue = formattedData.reduce((sum, item) => sum + item.dineInRevenue, 0);
+    const totalDineInOrders = formattedData.reduce((sum, item) => sum + item.dineInCount, 0);
+    const totalDeliveryRevenue = formattedData.reduce((sum, item) => sum + item.deliveryRevenue, 0);
+    const totalDeliveryOrders = formattedData.reduce((sum, item) => sum + item.deliveryCount, 0);
+    const avgRevenue = formattedData.length > 0 ? totalRevenue / formattedData.length : 0;
+    
+    res.json({
+      success: true,
+      data: {
+        period,
+        data: formattedData,
+        summary: {
+          totalRevenue,
+          totalOrders,
+          avgRevenue: Math.round(avgRevenue * 100) / 100,
+          avgOrderValue: totalOrders > 0 ? Math.round((totalRevenue / totalOrders) * 100) / 100 : 0,
+          // แยกตาม orderType
+          dineIn: {
+            revenue: totalDineInRevenue,
+            orders: totalDineInOrders,
+            avgOrderValue: totalDineInOrders > 0 ? Math.round((totalDineInRevenue / totalDineInOrders) * 100) / 100 : 0
+          },
+          delivery: {
+            revenue: totalDeliveryRevenue,
+            orders: totalDeliveryOrders,
+            avgOrderValue: totalDeliveryOrders > 0 ? Math.round((totalDeliveryRevenue / totalDeliveryOrders) * 100) / 100 : 0
+          }
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get shop revenue statistics error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 // For shop owners (just auth middleware)
 router.get(
   '/shops',
@@ -408,38 +719,6 @@ router.get('/active', async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // Check if shop 788120 exists
-    const targetShop = shops.find(s => s.shopId === '788120' || String(s._id) === '788120');
-    if (targetShop) {
-      console.log('🔍 Found shop 788120 in query results:', {
-        shopId: targetShop.shopId,
-        _id: targetShop._id,
-        shopName: targetShop.shopName,
-        status: targetShop.status,
-        deliveryOption: targetShop.deliveryOption,
-        isOpen: targetShop.isOpen,
-        coordinates: targetShop.coordinates,
-        hasCoordinates: !!(targetShop.coordinates?.latitude && targetShop.coordinates?.longitude)
-      });
-    } else {
-      console.log('⚠️ Shop 788120 NOT found in query results');
-      // Try to find it directly
-      const directShop = await Shop.findOne({ shopId: '788120' }).lean();
-      if (directShop) {
-        console.log('🔍 Found shop 788120 via direct query:', {
-          shopId: directShop.shopId,
-          _id: directShop._id,
-          shopName: directShop.shopName,
-          status: directShop.status,
-          deliveryOption: directShop.deliveryOption,
-          isOpen: directShop.isOpen,
-          coordinates: directShop.coordinates
-        });
-      } else {
-        console.log('❌ Shop 788120 does not exist in database');
-      }
-    }
-
     // Convert image URLs to signed URLs for frontend access
     const { getSignedUrls } = require('../utils/gcpStorage');
     const shopsWithSignedUrls = await Promise.all(
@@ -466,8 +745,6 @@ router.get('/active', async (req, res) => {
       businessHours: shop.businessHours || shop.workingHours || ''
     }));
 
-    console.log(`✅ Found ${mappedShops.length} active shops for ${province || 'all provinces'}`);
-    
     res.json({
       success: true,
       data: mappedShops,
@@ -733,6 +1010,8 @@ router.put('/:id', auth, async (req, res) => {
       deliveryOption,
       deliveryRadiusKm,
       deliveryPrice,
+      includeVat,
+      vatRate,
       bankAccount,
       coordinates,
       images,
@@ -826,6 +1105,15 @@ router.put('/:id', auth, async (req, res) => {
       }
 
       shop.deliveryPrice = priceNum;
+    }
+    if (typeof includeVat === 'boolean') {
+      shop.includeVat = includeVat;
+    }
+    if (vatRate !== undefined && vatRate !== null && !Number.isNaN(Number(vatRate))) {
+      const rate = Number(vatRate);
+      if (rate >= 0 && rate <= 100) {
+        shop.vatRate = rate;
+      }
     }
     if (coordinates && typeof coordinates === 'object' && coordinates.latitude && coordinates.longitude) {
       shop.coordinates = {
@@ -1051,16 +1339,17 @@ router.get('/:id/menu', async (req, res) => {
       .sort({ isAvailable: -1, name: 1 })
       .lean();
 
-    // Convert image URLs to signed URLs for frontend access
+    // Convert image paths/URLs to signed URLs so รูปเมนูโหลดได้ (รองรับทั้ง path แบบ shops/xxx/image.jpg และ full GCP URL)
     const { getSignedUrl } = require('../utils/gcpStorage');
     const itemsWithSignedUrls = await Promise.all(
       items.map(async (item) => {
-        if (item.image && item.image.includes('storage.googleapis.com')) {
+        if (item.image && typeof item.image === 'string' && item.image.trim()) {
           try {
             item.image = await getSignedUrl(item.image);
           } catch (signedUrlError) {
-            console.error('❌ Error generating signed URL for menu item image:', signedUrlError);
-            // Continue with original URL if signed URL generation fails
+            if (process.env.NODE_ENV !== 'production') {
+              console.warn('Menu item image sign failed:', item.image?.substring(0, 50));
+            }
           }
         }
         return item;
@@ -1251,14 +1540,16 @@ router.put('/:id/menu/:menuId', auth, async (req, res) => {
 
     await item.save();
 
-    // Convert image URL to signed URL if it's from GCP
+    // Convert image path/URL to signed URL so client always gets https (same logic as GET menu)
     let itemData = item.toObject ? item.toObject() : item;
-    if (itemData.image && itemData.image.includes('storage.googleapis.com')) {
+    if (itemData.image && typeof itemData.image === 'string' && itemData.image.trim()) {
       try {
         const { getSignedUrl } = require('../utils/gcpStorage');
         itemData.image = await getSignedUrl(itemData.image);
       } catch (signedUrlError) {
-        console.error('❌ Error generating signed URL for menu item image:', signedUrlError);
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('Menu item image sign failed (PUT):', itemData.image?.substring(0, 50));
+        }
       }
     }
 

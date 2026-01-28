@@ -10,8 +10,12 @@ const Partner = require('../models/Partner');
 const PointSystem = require('../models/PointSystem');
 const PointTransaction = require('../models/PointTransaction');
 const CashReward = require('../models/CashReward');
+const ShopFeeSplitRecord = require('../models/ShopFeeSplitRecord');
 const Reward = require('../models/Reward');
 const Rider = require('../models/Rider');
+const Delivery = require('../models/Delivery');
+const mongoose = require('mongoose');
+const { getSignedUrl } = require('../utils/gcpStorage');
 
 /**
  * GET /api/v2/admin/dashboard
@@ -24,7 +28,7 @@ router.get('/dashboard', auth, adminAuth, async (req, res) => {
     // Get user statistics
     const totalUsers = await User.countDocuments();
     const activeUsers = await User.countDocuments({
-      lastLoginAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+      lastLogin: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
     });
     const newUsersToday = await User.countDocuments({
       createdAt: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) }
@@ -572,27 +576,100 @@ router.post('/participations/:participationId/approve', auth, adminAuth, async (
       console.log(`💰 Deducted ${pointsCost} points (quest cost) from quest owner ${questOwnerId} (first approval)`);
     }
 
+    // Create PointTransaction records so การหัก and รางวัลทำ quest follow tiktok สำเร็จ appear in point history
+    if (questOwnerId || participation.participant) {
+      const [ownerAfter, participantAfter] = await Promise.all([
+        questOwnerId ? User.findById(questOwnerId).select('points').lean() : null,
+        participation.participant ? User.findById(participation.participant).select('points').lean() : null
+      ]);
+      const ownerPoints = ownerAfter?.points ?? 0;
+      const participantPoints = participantAfter?.points ?? 0;
+
+      const txPromises = [];
+
+      // 1) Owner – การหัก รางวัลให้ผู้ทำ quest (ทุกครั้งที่ approve)
+      if (questOwnerId && pointsReward > 0) {
+        const ownerBalanceAfterRewardDeduction = ownerPoints + (isFirstApproval && pointsCost > 0 ? pointsCost : 0);
+        txPromises.push(
+          PointTransaction.create({
+            userId: questOwnerId,
+            type: 'deduction',
+            amount: -pointsReward,
+            description: 'รางวัล TikTok follow quest ให้ผู้ทำ quest สำเร็จ',
+            relatedId: participation._id,
+            relatedModel: null,
+            remainingPoints: ownerBalanceAfterRewardDeduction
+          })
+        );
+      }
+
+      // 2) Owner – การหัก ค่าธรรมเนียมสร้าง quest (ครั้งแรกที่ approve เท่านั้น)
+      if (isFirstApproval && questOwnerId && pointsCost > 0) {
+        txPromises.push(
+          PointTransaction.create({
+            userId: questOwnerId,
+            type: 'deduction',
+            amount: -pointsCost,
+            description: 'ค่าธรรมเนียมสร้าง TikTok follow quest',
+            relatedId: participation.quest?._id || participation._id,
+            relatedModel: null,
+            remainingPoints: ownerPoints
+          })
+        );
+      }
+
+      // 3) Participant – คนที่ทำ quest follow tiktok สำเร็จ
+      if (pointsReward > 0 && participation.participant) {
+        txPromises.push(
+          PointTransaction.create({
+            userId: participation.participant,
+            type: 'reward',
+            amount: pointsReward,
+            description: 'รางวัลทำ TikTok follow quest สำเร็จ',
+            relatedId: participation._id,
+            relatedModel: null,
+            remainingPoints: participantPoints
+          })
+        );
+      }
+
+      if (txPromises.length) {
+        await Promise.all(txPromises);
+        console.log(`📋 Created ${txPromises.length} PointTransaction(s) for TikTok follow quest approval`);
+      }
+    }
+
     // Update quest participation count
-    await SocialQuest.findByIdAndUpdate(participation.quest._id, {
-      $inc: { currentParticipants: 1 }
-    });
+    const updatedQuest = await SocialQuest.findByIdAndUpdate(
+      participation.quest._id,
+      { $inc: { currentParticipants: 1 } },
+      { new: true }
+    ).lean();
+    // เมื่อครบจำนวนสูงสุด (เช่น 10/10) ให้เปลี่ยนสถานะเป็น completed และจบเควส ไม่ให้เข้าร่วมต่อ
+    if (updatedQuest.maxParticipants != null && updatedQuest.currentParticipants >= updatedQuest.maxParticipants) {
+      await SocialQuest.findByIdAndUpdate(participation.quest._id, {
+        $set: { status: 'completed', completedAt: new Date() }
+      });
+    }
 
-    // For follow quests: Save owner's TikTok username to participant's approvedFollowers list
-    // This prevents creating duplicate follow quests for the same user
+    // For follow quests: Save owner's TikTok openId (user ID) to participant's approvedFollowers list
+    // This prevents creating duplicate follow quests for the same user (one-time quest per TikTok user)
+    // Check by openId instead of username because username can change but openId is permanent
     if (participation.quest?.template === 'tiktok_follow' && questOwnerId) {
-      // Get owner's TikTok username (the person being followed)
+      // Get owner's TikTok info (openId and username)
       const owner = await User.findById(questOwnerId)
-        .select('integrations.tiktok.username');
+        .select('integrations.tiktok.username integrations.tiktok.openId');
 
-      if (owner?.integrations?.tiktok?.username) {
-        const ownerTiktokUsername = owner.integrations.tiktok.username.toLowerCase();
+      if (owner?.integrations?.tiktok?.openId) {
+        const ownerTiktokOpenId = owner.integrations.tiktok.openId;
+        const ownerTiktokUsername = owner.integrations.tiktok.username?.toLowerCase() || '';
 
-        // Get participant to add owner's username to their approvedFollowers list
+        // Get participant to add owner's openId to their approvedFollowers list
         const participant = await User.findById(participation.participant);
         if (participant) {
-          // Check if this username is already in participant's approvedFollowers
+          // Check if this openId is already in participant's approvedFollowers (one-time check)
           const alreadyExists = participant.approvedFollowers?.some(
-            f => f.tiktokUsername === ownerTiktokUsername
+            f => f.tiktokOpenId === ownerTiktokOpenId
           );
 
           if (!alreadyExists) {
@@ -601,14 +678,19 @@ router.post('/participations/:participationId/approve', auth, adminAuth, async (
               participant.approvedFollowers = [];
             }
             participant.approvedFollowers.push({
-              tiktokUsername: ownerTiktokUsername,
+              tiktokUsername: ownerTiktokUsername, // Optional: for display purposes
+              tiktokOpenId: ownerTiktokOpenId, // Required: primary identifier
               approvedAt: new Date(),
               questId: participation.quest._id
             });
             await participant.save();
-            console.log(`📝 Added @${ownerTiktokUsername} to participant's approvedFollowers list`);
+            console.log(`📝 Added TikTok user (openId: ${ownerTiktokOpenId}, username: @${ownerTiktokUsername}) to participant's approvedFollowers list - one-time quest enforced`);
+          } else {
+            console.log(`⚠️ TikTok user (openId: ${ownerTiktokOpenId}) already in approvedFollowers - quest already completed`);
           }
         }
+      } else {
+        console.warn(`⚠️ Owner ${questOwnerId} does not have TikTok openId - cannot add to approvedFollowers`);
       }
     }
 
@@ -867,7 +949,7 @@ router.get('/users', auth, adminAuth, async (req, res) => {
     }
 
     const users = await User.find(query)
-      .select('name email photo userType points createdAt lastLoginAt')
+      .select('name email photo userType points createdAt lastLogin verificationDocuments nationalId bankAccount')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -875,10 +957,65 @@ router.get('/users', auth, adminAuth, async (req, res) => {
 
     const total = await User.countDocuments(query);
 
+    // Convert verification document URLs to signed URLs
+    const usersWithSignedUrls = await Promise.all(
+      users.map(async (user) => {
+        if (user.verificationDocuments) {
+          const docs = user.verificationDocuments;
+          const updatedDocs = { ...docs };
+
+          // Convert ID card URL
+          if (docs.idCard?.url) {
+            try {
+              updatedDocs.idCard = {
+                ...docs.idCard,
+                url: await getSignedUrl(docs.idCard.url),
+              };
+            } catch (e) {
+              console.error(`Error getting signed URL for ID card (user ${user._id}):`, e);
+              updatedDocs.idCard = docs.idCard;
+            }
+          }
+
+          // Convert bank book URL
+          if (docs.bankBook?.url) {
+            try {
+              updatedDocs.bankBook = {
+                ...docs.bankBook,
+                url: await getSignedUrl(docs.bankBook.url),
+              };
+            } catch (e) {
+              console.error(`Error getting signed URL for bank book (user ${user._id}):`, e);
+              updatedDocs.bankBook = docs.bankBook;
+            }
+          }
+
+          // Convert face photo URL
+          if (docs.facePhoto?.url) {
+            try {
+              updatedDocs.facePhoto = {
+                ...docs.facePhoto,
+                url: await getSignedUrl(docs.facePhoto.url),
+              };
+            } catch (e) {
+              console.error(`Error getting signed URL for face photo (user ${user._id}):`, e);
+              updatedDocs.facePhoto = docs.facePhoto;
+            }
+          }
+
+          return {
+            ...user,
+            verificationDocuments: updatedDocs,
+          };
+        }
+        return user;
+      })
+    );
+
     res.json({
       success: true,
       data: {
-        users,
+        users: usersWithSignedUrls,
         pagination: {
           page,
           limit,
@@ -1450,28 +1587,364 @@ router.get('/point-system/transactions', auth, adminAuth, async (req, res) => {
 
 /**
  * GET /api/v2/admin/cash-rewards
- * Get all cash reward redemptions
+ * Get cash reward redemptions. Supports status filter and pagination.
+ * Query: status (optional), page (default 1), limit (default 20). Pagination metadata when limit provided.
  */
 router.get('/cash-rewards', auth, adminAuth, async (req, res) => {
   try {
-    const { status } = req.query;
+    const { status, page, limit } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const usePagination = limit != null;
 
     let query = {};
     if (status) {
       query.status = status;
     }
 
-    const cashRewards = await CashReward.find(query)
-      .populate('user', 'name email')
-      .sort({ requestedAt: -1 })
-      .limit(100);
+    if (usePagination) {
+      const total = await CashReward.countDocuments(query);
+      const skip = (pageNum - 1) * limitNum;
+      const cashRewards = await CashReward.find(query)
+        .populate('user', 'name email')
+        .sort({ requestedAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean();
+
+      res.json({
+        success: true,
+        data: cashRewards,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum) || 1
+        }
+      });
+    } else {
+      const cashRewards = await CashReward.find(query)
+        .populate('user', 'name email')
+        .sort({ requestedAt: -1 })
+        .limit(100);
+
+      res.json({
+        success: true,
+        data: cashRewards
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error getting cash rewards:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * GET /api/v2/admin/revenue-commission
+ * เก็บรายได้ (platform fee revenue) + จ่าย commission (partner pending, cash rewards)
+ */
+router.get('/revenue-commission', auth, adminAuth, async (req, res) => {
+  try {
+    // เก็บรายได้: platformShare จาก ShopFeeSplitRecord (points)
+    // รวม shop fees (delivery, dine_in) และ job fees (job_application_fee, job_commission_fee)
+    const feeAgg = await ShopFeeSplitRecord.aggregate([
+      { $group: { _id: '$feeType', total: { $sum: '$platformShare' }, count: { $sum: 1 } } }
+    ]);
+    const byFeeType = { delivery: 0, dine_in: 0, job_application_fee: 0, job_commission_fee: 0 };
+    let totalPlatformRevenue = 0;
+    for (const row of feeAgg) {
+      if (byFeeType.hasOwnProperty(row._id)) {
+        byFeeType[row._id] = row.total;
+      }
+      totalPlatformRevenue += row.total;
+    }
+
+    // จ่าย commission: Sum partnerShare จาก ShopFeeSplitRecord (points) - นี่คือ commission ที่ต้องจ่ายจริง
+    const partnerCommissionAgg = await ShopFeeSplitRecord.aggregate([
+      { $match: { partnerShare: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$partnerShare' } } }
+    ]);
+    const totalPartnerPendingPoints = Number(partnerCommissionAgg[0]?.total) || 0;
+
+    // Cash rewards: pending / approved / paid (บาท)
+    const cashAgg = await CashReward.aggregate([
+      { $match: { status: { $in: ['pending', 'approved', 'paid'] } } },
+      { $group: { _id: '$status', total: { $sum: '$amount' }, count: { $sum: 1 } } }
+    ]);
+    const cashPending = cashAgg.find((r) => r._id === 'pending') || { total: 0, count: 0 };
+    const cashApproved = cashAgg.find((r) => r._id === 'approved') || { total: 0, count: 0 };
+    const cashPaid = cashAgg.find((r) => r._id === 'paid') || { total: 0, count: 0 };
 
     res.json({
       success: true,
-      data: cashRewards
+      data: {
+        revenue: {
+          totalPlatformPoints: totalPlatformRevenue,
+          byFeeType: { 
+            delivery: byFeeType.delivery, 
+            dine_in: byFeeType.dine_in,
+            job_application_fee: byFeeType.job_application_fee,
+            job_commission_fee: byFeeType.job_commission_fee
+          }
+        },
+        commission: {
+          totalPartnerPendingPoints
+        },
+        cashRewards: {
+          pending: { amount: cashPending.total, count: cashPending.count },
+          approved: { amount: cashApproved.total, count: cashApproved.count },
+          paid: { amount: cashPaid.total, count: cashPaid.count }
+        }
+      }
     });
   } catch (error) {
-    console.error('❌ Error getting cash rewards:', error);
+    console.error('❌ Error getting revenue-commission:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * GET /api/v2/admin/fee-commission-statistics
+ * Get fee and commission statistics grouped by period (daily/monthly/yearly)
+ */
+router.get('/fee-commission-statistics', auth, adminAuth, async (req, res) => {
+  try {
+    const { period = 'daily' } = req.query; // 'daily', 'monthly', 'yearly'
+
+    // Determine date grouping format
+    let dateFormat;
+    let dateProjection;
+    let startDate;
+
+    const now = new Date();
+    if (period === 'daily') {
+      // Last 30 days
+      startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 30);
+      dateFormat = { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } };
+      dateProjection = { $dateToString: { format: '%d/%m/%Y', date: '$createdAt' } };
+    } else if (period === 'monthly') {
+      // Last 12 months
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 12);
+      dateFormat = { $dateToString: { format: '%Y-%m', date: '$createdAt' } };
+      dateProjection = { $dateToString: { format: '%m/%Y', date: '$createdAt' } };
+    } else {
+      // Last 5 years
+      startDate = new Date(now);
+      startDate.setFullYear(startDate.getFullYear() - 5);
+      dateFormat = { $dateToString: { format: '%Y', date: '$createdAt' } };
+      dateProjection = { $dateToString: { format: '%Y', date: '$createdAt' } };
+    }
+
+    // Aggregate Fee (platformShare) by period
+    const feeAgg = await ShopFeeSplitRecord.aggregate([
+      {
+        $match: {
+          platformShare: { $gt: 0 },
+          createdAt: { $gte: startDate }
+        }
+      },
+      {
+        $group: {
+          _id: dateFormat,
+          label: { $first: dateProjection },
+          totalFee: { $sum: '$platformShare' },
+          count: { $sum: 1 },
+          deliveryFee: {
+            $sum: {
+              $cond: [{ $eq: ['$feeType', 'delivery'] }, '$platformShare', 0]
+            }
+          },
+          dineInFee: {
+            $sum: {
+              $cond: [{ $eq: ['$feeType', 'dine_in'] }, '$platformShare', 0]
+            }
+          },
+          jobApplicationFee: {
+            $sum: {
+              $cond: [{ $eq: ['$feeType', 'job_application_fee'] }, '$platformShare', 0]
+            }
+          },
+          jobCommissionFee: {
+            $sum: {
+              $cond: [{ $eq: ['$feeType', 'job_commission_fee'] }, '$platformShare', 0]
+            }
+          }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Aggregate Commission (partnerShare) by period
+    const commissionAgg = await ShopFeeSplitRecord.aggregate([
+      {
+        $match: {
+          partnerShare: { $gt: 0 },
+          createdAt: { $gte: startDate }
+        }
+      },
+      {
+        $group: {
+          _id: dateFormat,
+          label: { $first: dateProjection },
+          totalCommission: { $sum: '$partnerShare' },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Combine data by date
+    const dataMap = new Map();
+    
+    // Add fee data
+    feeAgg.forEach(item => {
+      dataMap.set(item._id, {
+        label: item.label,
+        fee: item.totalFee,
+        commission: 0,
+        deliveryFee: item.deliveryFee,
+        dineInFee: item.dineInFee,
+        jobApplicationFee: item.jobApplicationFee,
+        jobCommissionFee: item.jobCommissionFee,
+        feeCount: item.count,
+        commissionCount: 0
+      });
+    });
+
+    // Add commission data
+    commissionAgg.forEach(item => {
+      if (dataMap.has(item._id)) {
+        const existing = dataMap.get(item._id);
+        existing.commission = item.totalCommission;
+        existing.commissionCount = item.count;
+      } else {
+        dataMap.set(item._id, {
+          label: item.label,
+          fee: 0,
+          commission: item.totalCommission,
+          deliveryFee: 0,
+          dineInFee: 0,
+          jobApplicationFee: 0,
+          jobCommissionFee: 0,
+          feeCount: 0,
+          commissionCount: item.count
+        });
+      }
+    });
+
+    // Convert to array and sort
+    const data = Array.from(dataMap.values()).sort((a, b) => {
+      // Sort by label (date string)
+      return a.label.localeCompare(b.label);
+    });
+
+    // Calculate summary
+    const summary = {
+      totalFee: feeAgg.reduce((sum, item) => sum + item.totalFee, 0),
+      totalCommission: commissionAgg.reduce((sum, item) => sum + item.totalCommission, 0),
+      totalFeeCount: feeAgg.reduce((sum, item) => sum + item.count, 0),
+      totalCommissionCount: commissionAgg.reduce((sum, item) => sum + item.count, 0),
+      avgFee: data.length > 0 ? feeAgg.reduce((sum, item) => sum + item.totalFee, 0) / data.length : 0,
+      avgCommission: data.length > 0 ? commissionAgg.reduce((sum, item) => sum + item.totalCommission, 0) / data.length : 0
+    };
+
+    res.json({
+      success: true,
+      data: {
+        summary,
+        data
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error getting fee-commission-statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * GET /api/v2/admin/platform-fee-history
+ * Get platform fee history from ShopFeeSplitRecord
+ */
+router.get('/platform-fee-history', auth, adminAuth, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    // Get ShopFeeSplitRecord with platformShare > 0, sorted by createdAt desc
+    const query = { platformShare: { $gt: 0 } };
+    
+    const total = await ShopFeeSplitRecord.countDocuments(query);
+    const records = await ShopFeeSplitRecord.find(query)
+      .populate('shop', 'name')
+      .populate('order', 'orderNumber')
+      .populate('job', 'title jobNumber')
+      .populate('jobApplication', 'applicationNumber')
+      .populate('partnerId', 'name')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    // Format records for display
+    const formattedRecords = records.map(record => {
+      let source = '';
+      let sourceName = '';
+      
+      if (record.feeType === 'delivery' || record.feeType === 'dine_in') {
+        source = 'ร้าน';
+        sourceName = record.shopName || record.shop?.name || 'N/A';
+      } else if (record.feeType === 'job_application_fee') {
+        source = 'งาน';
+        sourceName = record.jobTitle || record.job?.title || 'N/A';
+      } else if (record.feeType === 'job_commission_fee') {
+        source = 'งาน';
+        sourceName = record.jobTitle || record.job?.title || 'N/A';
+      }
+
+      const feeTypeText = {
+        delivery: 'ค่าจัดส่ง',
+        dine_in: 'ค่ากินที่ร้าน',
+        job_application_fee: 'ค่าธรรมเนียมสมัครงาน',
+        job_commission_fee: 'ค่านายหน้าจ้างงาน'
+      }[record.feeType] || record.feeType;
+
+      return {
+        _id: record._id,
+        feeType: record.feeType,
+        feeTypeText,
+        platformShare: record.platformShare,
+        source,
+        sourceName,
+        orderNumber: record.orderNumber || record.order?.orderNumber,
+        jobNumber: record.jobNumber || record.job?.jobNumber,
+        createdAt: record.createdAt
+      };
+    });
+
+    res.json({
+      success: true,
+      data: formattedRecords,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error getting platform fee history:', error);
     res.status(500).json({
       success: false,
       message: error.message || 'เกิดข้อผิดพลาด'
@@ -1486,6 +1959,7 @@ router.get('/cash-rewards', auth, adminAuth, async (req, res) => {
 router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    const { useOmisePayout = true } = req.body; // Default: true to use Omise Payout API (can set false to disable)
 
     const cashReward = await CashReward.findById(id);
     if (!cashReward) {
@@ -1502,15 +1976,307 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
       });
     }
 
+    // Deduct points from user when approving withdrawal
+    const user = await User.findById(cashReward.user);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบผู้ใช้'
+      });
+    }
+
+    // Check if user still has enough points (in case they spent some while pending)
+    if ((user.points || 0) < cashReward.pointsUsed) {
+      return res.status(400).json({
+        success: false,
+        message: `ผู้ใช้มีคะแนนไม่พอ (ต้องการ: ${cashReward.pointsUsed.toLocaleString()}, มี: ${(user.points || 0).toLocaleString()})`
+      });
+    }
+
+    // Optionally use Omise Payout API for automatic transfer
+    let omiseTransfer = null;
+    let transferCompleted = false;
+    if (useOmisePayout && process.env.OMISE_SECRET_KEY) {
+      try {
+        const paymentService = require('../services/paymentService');
+        
+        // Check Omise balance first (use transferable balance, not available)
+        const balance = await paymentService.getBalance();
+        const transferableBalance = (balance.transferable || 0) / 100; // Convert from satang to THB
+        const availableBalance = (balance.available || 0) / 100; // Also check available for reference
+        
+        console.log(`💰 Omise balance check: transferable=${transferableBalance} THB, available=${availableBalance} THB, required=${cashReward.amount} THB`);
+        
+        if (transferableBalance < cashReward.amount) {
+          console.warn(`⚠️ Omise transferable balance insufficient: ${transferableBalance} THB < ${cashReward.amount} THB`);
+          console.warn(`   Total balance: ${(balance.total || 0) / 100} THB, On Hold: ${(balance.on_hold || 0) / 100} THB`);
+          console.warn(`   Funds are on hold and not yet transferable. Transfer will be pending until funds become transferable.`);
+          
+          // Store balance info in metadata
+          if (!cashReward.metadata) {
+            cashReward.metadata = {};
+          }
+          cashReward.metadata.omiseBalance = {
+            transferable: transferableBalance,
+            available: availableBalance,
+            total: (balance.total || 0) / 100,
+            onHold: (balance.on_hold || 0) / 100
+          };
+          cashReward.metadata.insufficientTransferableBalance = true;
+          
+          // Notify admins that transferable balance is insufficient
+          try {
+            const { createManualTransferRequiredNotification } = require('../utils/notificationHelper');
+            await createManualTransferRequiredNotification(
+              user._id.toString(),
+              user.name,
+              user.email,
+              cashReward.amount,
+              cashReward.pointsUsed,
+              cashReward._id.toString(),
+              [`Omise transferable balance insufficient (${transferableBalance} THB < ${cashReward.amount} THB). Funds are on hold.`]
+            );
+            console.log(`📧 Sent insufficient balance notification to admins`);
+          } catch (notifError) {
+            console.error('⚠️ Failed to send insufficient balance notification:', notifError);
+          }
+          
+          // Continue with approval but note that transfer will be pending
+        } else {
+          // Use existing recipient from user's bankAccount (created during verification approval)
+          // Only create new recipient if it doesn't exist
+          let recipient = null;
+          let recipientStatus = null;
+          
+          if (user.bankAccount?.omiseRecipientId) {
+            // User already has recipient from verification approval
+            try {
+              recipient = await paymentService.getRecipientInfo(user.bankAccount.omiseRecipientId);
+              recipientStatus = await paymentService.checkRecipientStatus(recipient.id);
+              console.log(`✅ Using existing Omise recipient from verification: ${recipient.id} (verified: ${recipient.verified}, active: ${recipient.active})`);
+            } catch (error) {
+              console.warn(`⚠️ Could not retrieve stored recipient ${user.bankAccount.omiseRecipientId}:`, error.message);
+              console.log(`   Recipient should have been created during verification approval`);
+              user.bankAccount.omiseRecipientId = null; // Clear invalid ID
+              recipient = null; // Mark as not found
+            }
+          }
+          
+          // If no valid recipient found, skip Omise payout and require manual transfer
+          if (!recipient) {
+            console.warn(`⚠️ No Omise recipient found for user ${user._id}. Recipient should have been created during verification approval.`);
+            console.log(`   Skipping Omise transfer - manual transfer required`);
+            
+            // Store metadata
+            if (!cashReward.metadata) {
+              cashReward.metadata = {};
+            }
+            cashReward.metadata.payoutSkipped = true;
+            cashReward.metadata.payoutSkippedReason = 'No Omise recipient found - recipient should be created during verification approval';
+            cashReward.metadata.requiresManualTransfer = true;
+            
+            // Notify admins that manual transfer is needed
+            try {
+              const { createManualTransferRequiredNotification } = require('../utils/notificationHelper');
+              await createManualTransferRequiredNotification(
+                user._id.toString(),
+                user.name,
+                user.email,
+                cashReward.amount,
+                cashReward.pointsUsed,
+                cashReward._id.toString(),
+                ['No Omise recipient found. Recipient should be created during verification approval.']
+              );
+              console.log(`📧 Sent manual transfer required notification to admins`);
+            } catch (notifError) {
+              console.error('⚠️ Failed to send manual transfer notification:', notifError);
+            }
+          } else {
+            // Store recipient info in metadata
+            if (!cashReward.metadata) {
+              cashReward.metadata = {};
+            }
+            cashReward.metadata.omiseRecipientId = recipient.id;
+            cashReward.metadata.recipientStatus = recipientStatus;
+            
+            if (!recipientStatus.canReceiveTransfers) {
+              console.warn(`⚠️ Recipient ${recipient.id} cannot receive transfers:`, recipientStatus.issues);
+              cashReward.metadata.recipientIssues = recipientStatus.issues;
+              cashReward.metadata.payoutSkipped = true;
+              cashReward.metadata.payoutSkippedReason = 'Recipient not verified/active';
+              cashReward.metadata.requiresManualTransfer = true;
+              console.log(`⏳ Skipping Omise transfer creation - recipient not ready. Status: verified=${recipientStatus.verified}, active=${recipientStatus.active}`);
+              console.log(`   Admin can process manually later or wait for recipient verification (usually 24-48 hours)`);
+              
+              // Notify admins that manual transfer is needed
+              try {
+                const { createManualTransferRequiredNotification } = require('../utils/notificationHelper');
+                await createManualTransferRequiredNotification(
+                  user._id.toString(),
+                  user.name,
+                  user.email,
+                  cashReward.amount,
+                  cashReward.pointsUsed,
+                  cashReward._id.toString(),
+                  recipientStatus.issues
+                );
+                console.log(`📧 Sent manual transfer required notification to admins`);
+              } catch (notifError) {
+                console.error('⚠️ Failed to send manual transfer notification:', notifError);
+              }
+            } else {
+              // Recipient is ready - create payout transfer
+              try {
+              omiseTransfer = await paymentService.createPayout(
+                cashReward.amount,
+                recipient.id
+              );
+              
+              // Check transfer status - Omise transfers may use 'paid' or 'sent' boolean fields
+              // Also check if status field exists
+              const isPaid = omiseTransfer.paid === true || omiseTransfer.status === 'paid';
+              const isSent = omiseTransfer.sent === true || omiseTransfer.status === 'sent';
+              
+              if (isPaid || isSent) {
+                transferCompleted = true;
+                console.log(`✅ Omise transfer ${omiseTransfer.id} already completed (paid: ${omiseTransfer.paid}, sent: ${omiseTransfer.sent}, status: ${omiseTransfer.status || 'N/A'})`);
+              } else {
+                const statusInfo = omiseTransfer.status || (omiseTransfer.paid ? 'paid' : omiseTransfer.sent ? 'sent' : 'pending');
+                console.log(`⏳ Omise transfer ${omiseTransfer.id} status: ${statusInfo} - will deduct points when transfer completes`);
+              }
+              
+              // Store Omise transfer ID in cashReward metadata
+              cashReward.metadata.omiseTransferId = omiseTransfer.id;
+              cashReward.metadata.payoutMethod = 'omise';
+              cashReward.metadata.transferStatus = omiseTransfer.status;
+              
+                console.log(`💰 Omise payout created: Transfer ${omiseTransfer.id} for ${cashReward.amount} THB (status: ${omiseTransfer.status})`);
+              } catch (payoutError) {
+                // If payout fails, log but don't fail approval
+                console.error(`❌ Failed to create Omise payout for recipient ${recipient.id}:`, payoutError.message);
+                cashReward.metadata.omiseError = payoutError.message;
+                cashReward.metadata.payoutFailed = true;
+                cashReward.metadata.requiresManualTransfer = true;
+                
+                // Notify all admins that manual transfer is needed
+                try {
+                  const { createManualTransferRequiredNotification } = require('../utils/notificationHelper');
+                  await createManualTransferRequiredNotification(
+                    user._id.toString(),
+                    user.name,
+                    user.email,
+                    cashReward.amount,
+                    cashReward.pointsUsed,
+                    cashReward._id.toString(),
+                    [payoutError.message]
+                  );
+                  console.log(`📧 Sent manual transfer required notification to admins`);
+                } catch (notifError) {
+                  console.error('⚠️ Failed to send manual transfer required notification:', notifError);
+                  // Don't fail the approval if notification fails
+                }
+                // Continue with approval - admin can process manually later
+              }
+            }
+          }
+        }
+      } catch (omiseError) {
+        console.error('❌ Omise payout error:', omiseError);
+        // Don't fail the approval, just log the error
+        // Admin can still mark as paid manually later
+        if (!cashReward.metadata) {
+          cashReward.metadata = {};
+        }
+        cashReward.metadata.omiseError = omiseError.message;
+      }
+    }
+
+    // Deduct points ONLY if:
+    // 1. Not using Omise (manual processing), OR
+    // 2. Using Omise but transfer is already completed (paid/sent)
+    if (!useOmisePayout || !omiseTransfer || transferCompleted) {
+      // Deduct points
+      user.points = (user.points || 0) - cashReward.pointsUsed;
+      await user.save();
+
+      // Update PointTransaction to reflect actual deduction
+      const pointTransaction = await PointTransaction.findOne({
+        relatedModel: 'CashReward',
+        relatedId: cashReward._id,
+        status: 'pending'
+      });
+      
+      if (pointTransaction) {
+        pointTransaction.amount = -cashReward.pointsUsed;
+        pointTransaction.status = 'completed';
+        pointTransaction.description = transferCompleted 
+          ? `ถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - โอนเงินผ่าน Omise แล้ว`
+          : `ถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - อนุมัติแล้ว`;
+        // Ensure metadata exists before updating
+        if (!pointTransaction.metadata) {
+          pointTransaction.metadata = {};
+        }
+        pointTransaction.metadata.pendingApproval = false;
+        if (omiseTransfer) {
+          pointTransaction.metadata.omiseTransferId = omiseTransfer.id;
+        }
+        await pointTransaction.save();
+      }
+    } else {
+      // Using Omise but transfer is pending - don't deduct points yet
+      // Points will be deducted when transfer webhook confirms payment
+      console.log(`⏳ Points NOT deducted yet - waiting for Omise transfer ${omiseTransfer.id} to complete`);
+      
+      // Update PointTransaction to show pending transfer
+      const pointTransaction = await PointTransaction.findOne({
+        relatedModel: 'CashReward',
+        relatedId: cashReward._id,
+        status: 'pending'
+      });
+      
+      if (pointTransaction) {
+        pointTransaction.description = `ถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - รอการโอนเงินผ่าน Omise`;
+        if (!pointTransaction.metadata) {
+          pointTransaction.metadata = {};
+        }
+        pointTransaction.metadata.omiseTransferId = omiseTransfer.id;
+        pointTransaction.metadata.waitingForTransfer = true;
+        await pointTransaction.save();
+      }
+    }
+
     cashReward.status = 'approved';
     await cashReward.save();
 
-    console.log(`✅ Admin ${req.user.id} approved cash reward ${id}`);
+    // Send notification to user about approval
+    try {
+      const { createWithdrawalApprovalNotification } = require('../utils/notificationHelper');
+      await createWithdrawalApprovalNotification(
+        user._id.toString(),
+        cashReward.amount,
+        cashReward.pointsUsed,
+        cashReward._id.toString(),
+        omiseTransfer ? omiseTransfer.id : null
+      );
+      console.log(`✅ Sent withdrawal approval notification to user ${user._id}`);
+    } catch (notifError) {
+      console.error('⚠️ Failed to send withdrawal approval notification to user:', notifError);
+      // Don't fail the approval if notification fails
+    }
+
+    console.log(`✅ Admin ${req.user.id} approved cash reward ${id} - deducted ${cashReward.pointsUsed} points from user ${user._id}${omiseTransfer ? ` - Omise transfer: ${omiseTransfer.id}` : ''}`);
 
     res.json({
       success: true,
-      message: 'อนุมัติการถอนเงินแล้ว',
-      data: cashReward
+      message: omiseTransfer ? 'อนุมัติการถอนเงินแล้ว (โอนเงินผ่าน Omise แล้ว)' : 'อนุมัติการถอนเงินแล้ว (รอการโอนเงินด้วยตนเอง)',
+      data: {
+        ...cashReward.toObject(),
+        omiseTransfer: omiseTransfer ? {
+          id: omiseTransfer.id,
+          status: omiseTransfer.status,
+          amount: omiseTransfer.amount / 100
+        } : null
+      }
     });
   } catch (error) {
     console.error('❌ Error approving cash reward:', error);
@@ -1522,15 +2288,251 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
 });
 
 /**
+ * GET /api/v2/admin/cash-rewards/:id/recipient-status
+ * Check Omise recipient status (verified, active, issues)
+ */
+router.get('/cash-rewards/:id/recipient-status', auth, adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const cashReward = await CashReward.findById(id);
+    if (!cashReward) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบคำขอถอนเงิน'
+      });
+    }
+
+    if (!cashReward.metadata?.omiseRecipientId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ยังไม่มี Omise recipient สำหรับคำขอนี้'
+      });
+    }
+
+    const paymentService = require('../services/paymentService');
+    const status = await paymentService.checkRecipientStatus(cashReward.metadata.omiseRecipientId);
+
+    res.json({
+      success: true,
+      data: status
+    });
+  } catch (error) {
+    console.error('❌ Error checking recipient status:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * POST /api/v2/admin/transfers/:id/mark-as-sent
+ * Mark a transfer as sent (test mode only)
+ * This allows immediate transfer in test mode, bypassing transferable balance check
+ */
+router.post('/transfers/:id/mark-as-sent', auth, adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Only allow in test mode
+    if (process.env.OMISE_SECRET_KEY && !process.env.OMISE_SECRET_KEY.includes('_test_')) {
+      return res.status(403).json({
+        success: false,
+        message: 'mark_as_sent is only available in test mode'
+      });
+    }
+
+    const paymentService = require('../services/paymentService');
+    const transfer = await paymentService.markTransferAsSent(id);
+
+    // Find cash reward by transfer ID and process if needed
+    const cashReward = await CashReward.findOne({
+      'metadata.omiseTransferId': id
+    });
+
+    if (cashReward) {
+      // Update transfer status in metadata
+      if (!cashReward.metadata) {
+        cashReward.metadata = {};
+      }
+      cashReward.metadata.transferStatus = 'sent';
+      cashReward.metadata.markedAsSentManually = true;
+      cashReward.metadata.markedAsSentBy = req.user.id;
+      cashReward.metadata.markedAsSentAt = new Date();
+      await cashReward.save();
+
+      // If transfer is sent, deduct points and mark as paid
+      if (transfer.sent) {
+        const user = await User.findById(cashReward.user);
+        if (user) {
+          // Check if points already deducted
+          const pointTransaction = await PointTransaction.findOne({
+            relatedModel: 'CashReward',
+            relatedId: cashReward._id
+          });
+
+          if (pointTransaction && pointTransaction.status === 'pending' && pointTransaction.metadata?.waitingForTransfer) {
+            // Deduct points
+            const oldPoints = user.points || 0;
+            user.points = oldPoints - cashReward.pointsUsed;
+            await user.save();
+
+            // Update PointTransaction
+            pointTransaction.amount = -cashReward.pointsUsed;
+            pointTransaction.status = 'completed';
+            pointTransaction.description = `ถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - โอนเงินผ่าน Omise แล้ว (marked as sent)`;
+            pointTransaction.metadata.waitingForTransfer = false;
+            await pointTransaction.save();
+
+            console.log(`✅ Marked as sent: Deducted ${cashReward.pointsUsed} points from user ${user._id}`);
+          }
+
+          // Mark cash reward as paid
+          if (cashReward.status === 'approved') {
+            cashReward.status = 'paid';
+            cashReward.paidAt = new Date();
+            await cashReward.save();
+
+            // Send notification to user
+            try {
+              const { createWithdrawalPaidNotification } = require('../utils/notificationHelper');
+              await createWithdrawalPaidNotification(
+                user._id.toString(),
+                cashReward.amount,
+                cashReward.pointsUsed,
+                cashReward._id.toString(),
+                'omise'
+              );
+            } catch (notifError) {
+              console.error('⚠️ Failed to send withdrawal paid notification:', notifError);
+            }
+          }
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Transfer marked as sent (test mode)',
+      data: {
+        id: transfer.id,
+        sent: transfer.sent,
+        paid: transfer.paid,
+        sendable: transfer.sendable
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error marking transfer as sent:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * POST /api/v2/admin/recipients/:id/verify
+ * Manually verify a recipient (test mode only)
+ */
+router.post('/recipients/:id/verify', auth, adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Only allow in test mode
+    if (process.env.OMISE_SECRET_KEY && !process.env.OMISE_SECRET_KEY.includes('_test_')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Manual verification is only available in test mode'
+      });
+    }
+
+    const paymentService = require('../services/paymentService');
+    const recipient = await paymentService.verifyRecipient(id);
+
+    res.json({
+      success: true,
+      message: 'Recipient verified successfully',
+      data: {
+        id: recipient.id,
+        verified: recipient.verified,
+        active: recipient.active
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error verifying recipient:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
+ * GET /api/v2/admin/cash-rewards/:id/recipient-info
+ * Get Omise recipient bank account information
+ */
+router.get('/cash-rewards/:id/recipient-info', auth, adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const cashReward = await CashReward.findById(id);
+    if (!cashReward) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบคำขอถอนเงิน'
+      });
+    }
+
+    // Check if Omise recipient ID exists
+    const recipientId = cashReward.metadata?.omiseRecipientId;
+    if (!recipientId) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบ Omise recipient ID สำหรับคำขอนี้'
+      });
+    }
+
+    try {
+      const paymentService = require('../services/paymentService');
+      const bankAccountInfo = await paymentService.getRecipientBankAccount(recipientId);
+      
+      return res.json({
+        success: true,
+        data: bankAccountInfo
+      });
+    } catch (omiseError) {
+      console.error('❌ Error getting recipient info:', omiseError);
+      return res.status(500).json({
+        success: false,
+        message: 'ไม่สามารถดึงข้อมูล recipient จาก Omise ได้',
+        error: omiseError.message
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error getting recipient info:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
  * POST /api/v2/admin/cash-rewards/:id/pay
- * Mark cash reward as paid
+ * Mark cash reward as paid (manual transfer)
+ * This will:
+ * 1. Deduct points if not already deducted
+ * 2. Update PointTransaction status
+ * 3. Mark cash reward as paid
+ * 4. Send notification to user
  */
 router.post('/cash-rewards/:id/pay', auth, adminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { adminNotes } = req.body;
 
-    const cashReward = await CashReward.findById(id);
+    const cashReward = await CashReward.findById(id).populate('user');
     if (!cashReward) {
       return res.status(404).json({
         success: false,
@@ -1545,20 +2547,108 @@ router.post('/cash-rewards/:id/pay', auth, adminAuth, async (req, res) => {
       });
     }
 
+    const user = cashReward.user;
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบข้อมูลผู้ใช้'
+      });
+    }
+
+    // Check if points were already deducted
+    const pointTransaction = await PointTransaction.findOne({
+      relatedModel: 'CashReward',
+      relatedId: cashReward._id
+    });
+
+    let pointsDeducted = false;
+    if (pointTransaction && pointTransaction.status === 'completed' && pointTransaction.amount < 0) {
+      // Points already deducted
+      pointsDeducted = true;
+      console.log(`ℹ️ Points already deducted for cash reward ${id}`);
+    } else {
+      // Deduct points now (manual transfer)
+      const oldPoints = user.points || 0;
+      user.points = oldPoints - cashReward.pointsUsed;
+      await user.save();
+      pointsDeducted = true;
+      console.log(`✅ Deducted ${cashReward.pointsUsed} points from user ${user._id} (${oldPoints} → ${user.points})`);
+
+      // Update or create PointTransaction
+      if (pointTransaction) {
+        pointTransaction.amount = -cashReward.pointsUsed;
+        pointTransaction.status = 'completed';
+        pointTransaction.description = `ถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - โอนเงินด้วยตนเองแล้ว`;
+        if (!pointTransaction.metadata) {
+          pointTransaction.metadata = {};
+        }
+        pointTransaction.metadata.manualTransfer = true;
+        pointTransaction.metadata.transferredBy = req.user.id;
+        pointTransaction.metadata.transferredAt = new Date();
+        await pointTransaction.save();
+      } else {
+        // Create new PointTransaction if doesn't exist
+        await PointTransaction.create({
+          userId: user._id,
+          type: 'withdrawal',
+          amount: -cashReward.pointsUsed,
+          status: 'completed',
+          description: `ถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - โอนเงินด้วยตนเองแล้ว`,
+          relatedModel: 'CashReward',
+          relatedId: cashReward._id,
+          metadata: {
+            manualTransfer: true,
+            transferredBy: req.user.id,
+            transferredAt: new Date()
+          }
+        });
+      }
+    }
+
+    // Mark cash reward as paid
     cashReward.status = 'paid';
     cashReward.paidAt = new Date();
     cashReward.paidBy = req.user.id;
     if (adminNotes) {
       cashReward.adminNotes = adminNotes;
     }
+    
+    // Update metadata to indicate manual transfer
+    if (!cashReward.metadata) {
+      cashReward.metadata = {};
+    }
+    cashReward.metadata.manualTransfer = true;
+    cashReward.metadata.manualTransferBy = req.user.id;
+    cashReward.metadata.manualTransferAt = new Date();
+    
     await cashReward.save();
 
-    console.log(`💰 Admin ${req.user.id} marked cash reward ${id} as paid`);
+    // Send notification to user about payment
+    try {
+      const { createWithdrawalPaidNotification } = require('../utils/notificationHelper');
+      const paymentMethod = 'manual'; // Always manual when using this endpoint
+      await createWithdrawalPaidNotification(
+        user._id.toString(),
+        cashReward.amount,
+        cashReward.pointsUsed,
+        cashReward._id.toString(),
+        paymentMethod
+      );
+      console.log(`✅ Sent withdrawal paid notification to user ${user._id}`);
+    } catch (notifError) {
+      console.error('⚠️ Failed to send withdrawal paid notification to user:', notifError);
+      // Don't fail the payment confirmation if notification fails
+    }
+
+    console.log(`💰 Admin ${req.user.id} marked cash reward ${id} as paid (manual transfer)${pointsDeducted ? ' - points deducted' : ''}`);
 
     res.json({
       success: true,
-      message: 'ยืนยันการจ่ายเงินแล้ว',
-      data: cashReward
+      message: 'ยืนยันการจ่ายเงินแล้ว (โอนเงินด้วยตนเอง)',
+      data: {
+        ...cashReward.toObject(),
+        pointsDeducted
+      }
     });
   } catch (error) {
     console.error('❌ Error marking cash reward as paid:', error);
@@ -1593,30 +2683,22 @@ router.post('/cash-rewards/:id/reject', auth, adminAuth, async (req, res) => {
       });
     }
 
-    // Refund points back to user
-    const user = await User.findById(cashReward.user);
-    if (user) {
-      user.points = (user.points || 0) + cashReward.pointsUsed;
-      await user.save();
-
-      // Use points from system (since we're refunding, we need to use points from system)
-      const pointSystem = await PointSystem.getSystem();
-      await pointSystem.usePoints(cashReward.pointsUsed, cashReward.user);
-
-      // Create PointTransaction for refund
-      await PointTransaction.create({
-        type: 'refund',
-        amount: cashReward.pointsUsed,
-        userId: cashReward.user,
-        description: `Refund from rejected cash reward (${cashReward.amount} บาท)`,
-        pointSystemState: {
-          totalPoints: pointSystem.totalPoints,
-          usedPoints: pointSystem.usedPoints,
-          availablePoints: pointSystem.availablePoints
-        },
-        status: 'completed'
-      });
+    // NOTE: Points are NOT deducted until approval, so no refund needed
+    // However, we'll update the PointTransaction to mark it as rejected
+    const pointTransaction = await PointTransaction.findOne({
+      relatedModel: 'CashReward',
+      relatedId: cashReward._id,
+      status: 'pending'
+    });
+    
+    if (pointTransaction) {
+      pointTransaction.status = 'failed'; // Use 'failed' instead of 'rejected' (not in enum: completed, pending, failed, refunded)
+      pointTransaction.description = `คำขอถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - ถูกปฏิเสธ${reason ? ': ' + reason : ''}`;
+      await pointTransaction.save();
     }
+
+    // No need to refund points since they were never deducted
+    // (Points are only deducted when approved, not when requested)
 
     cashReward.status = 'rejected';
     if (reason) {
@@ -1624,11 +2706,30 @@ router.post('/cash-rewards/:id/reject', auth, adminAuth, async (req, res) => {
     }
     await cashReward.save();
 
+    // Send notification to user about rejection
+    try {
+      const user = await User.findById(cashReward.user);
+      if (user) {
+        const { createWithdrawalRejectionNotification } = require('../utils/notificationHelper');
+        await createWithdrawalRejectionNotification(
+          user._id.toString(),
+          cashReward.amount,
+          cashReward.pointsUsed,
+          cashReward._id.toString(),
+          reason
+        );
+        console.log(`✅ Sent withdrawal rejection notification to user ${user._id}`);
+      }
+    } catch (notifError) {
+      console.error('⚠️ Failed to send withdrawal rejection notification to user:', notifError);
+      // Don't fail the rejection if notification fails
+    }
+
     console.log(`❌ Admin ${req.user.id} rejected cash reward ${id}`);
 
     res.json({
       success: true,
-      message: 'ปฏิเสธการถอนเงินแล้ว (คะแนนถูกคืนให้ผู้ใช้แล้ว)',
+      message: 'ปฏิเสธการถอนเงินแล้ว',
       data: cashReward
     });
   } catch (error) {
@@ -1783,6 +2884,131 @@ router.get('/riders', auth, adminAuth, async (req, res) => {
 });
 
 /**
+ * GET /api/v2/admin/riders/:riderId/statistics
+ * Get rider statistics (admin view dashboard for specific rider)
+ */
+router.get('/riders/:riderId/statistics', auth, adminAuth, async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const { period = 'daily' } = req.query;
+
+    const rider = await Rider.findById(riderId).lean();
+    if (!rider) {
+      return res.status(404).json({ success: false, message: 'ไม่พบข้อมูล Rider' });
+    }
+
+    const userIdForQuery = rider.user?.toString?.() || String(rider.user);
+    const riderCodeForQuery = rider.riderCode || null;
+
+    const now = new Date();
+    let startDate, groupFormat;
+
+    if (period === 'daily') {
+      startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 30);
+      groupFormat = { year: { $year: '$createdAt' }, month: { $month: '$createdAt' }, day: { $dayOfMonth: '$createdAt' } };
+    } else if (period === 'monthly') {
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 12);
+      groupFormat = { year: { $year: '$createdAt' }, month: { $month: '$createdAt' } };
+    } else if (period === 'yearly') {
+      startDate = new Date(now);
+      startDate.setFullYear(startDate.getFullYear() - 5);
+      groupFormat = { year: { $year: '$createdAt' } };
+    } else {
+      return res.status(400).json({ success: false, message: 'Invalid period. Must be: daily, monthly, or yearly' });
+    }
+
+    const matchQuery = { createdAt: { $gte: startDate, $lte: now } };
+    if (riderCodeForQuery) {
+      matchQuery.$or = [
+        { riderCode: riderCodeForQuery },
+        { rider: new mongoose.Types.ObjectId(userIdForQuery) }
+      ];
+    } else {
+      matchQuery.rider = new mongoose.Types.ObjectId(userIdForQuery);
+    }
+
+    const deliveryData = await Delivery.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: groupFormat,
+          totalDeliveries: { $sum: 1 },
+          completedDeliveries: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+          cancelledDeliveries: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
+          totalEarnings: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'delivered'] }, { $ifNull: ['$riderFee', 0] }, 0]
+            }
+          },
+          avgEarnings: {
+            $avg: {
+              $cond: [
+                { $eq: ['$status', 'delivered'] },
+                { $ifNull: ['$riderFee', 0] },
+                null
+              ]
+            }
+          }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 } }
+    ]);
+
+    const formattedData = deliveryData.map((item) => {
+      let label;
+      if (period === 'daily') {
+        const d = new Date(item._id.year, item._id.month - 1, item._id.day);
+        label = d.toLocaleDateString('th-TH', { day: '2-digit', month: 'short' });
+      } else if (period === 'monthly') {
+        const d = new Date(item._id.year, item._id.month - 1);
+        label = d.toLocaleDateString('th-TH', { month: 'long', year: 'numeric' });
+      } else {
+        label = `${item._id.year}`;
+      }
+      return {
+        label,
+        totalDeliveries: item.totalDeliveries,
+        completedDeliveries: item.completedDeliveries || 0,
+        cancelledDeliveries: item.cancelledDeliveries || 0,
+        earnings: item.totalEarnings || 0,
+        avgEarnings: Math.round((item.avgEarnings || 0) * 100) / 100
+      };
+    });
+
+    const totalDeliveries = formattedData.reduce((s, i) => s + i.totalDeliveries, 0);
+    const totalCompleted = formattedData.reduce((s, i) => s + i.completedDeliveries, 0);
+    const totalCancelled = formattedData.reduce((s, i) => s + i.cancelledDeliveries, 0);
+    const totalEarnings = formattedData.reduce((s, i) => s + i.earnings, 0);
+    const avgEarnings = formattedData.length > 0 ? totalEarnings / formattedData.length : 0;
+    const avgPerDelivery = totalCompleted > 0 ? Math.round((totalEarnings / totalCompleted) * 100) / 100 : 0;
+
+    res.json({
+      success: true,
+      data: {
+        period,
+        data: formattedData,
+        summary: {
+          totalDeliveries,
+          totalCompleted,
+          totalCancelled,
+          totalEarnings,
+          avgEarnings: Math.round(avgEarnings * 100) / 100,
+          avgPerDelivery
+        }
+      }
+    });
+  } catch (error) {
+    console.error('❌ GET /admin/riders/:riderId/statistics:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
+    });
+  }
+});
+
+/**
  * GET /api/v2/admin/riders/:riderId
  * Get rider details with images (admin only)
  */
@@ -1836,6 +3062,129 @@ router.get('/riders/:riderId', auth, adminAuth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/admin/settings/point-conversion-rate
+ * Get point conversion rate (1 point = X THB)
+ * Public endpoint - users need to know the rate
+ */
+router.get('/settings/point-conversion-rate', async (req, res) => {
+  try {
+    let rate = await QuestSettings.getSetting('point_conversion_rate');
+    
+    // If setting doesn't exist, create it with default value 1
+    if (rate === null) {
+      await QuestSettings.updateSetting('point_conversion_rate', 1, null);
+      rate = 1;
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        rate: rate
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching point conversion rate:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch conversion rate',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/admin/settings/point-conversion-rate
+ * Update point conversion rate (admin only)
+ */
+router.put('/settings/point-conversion-rate', auth, adminAuth, async (req, res) => {
+  try {
+    const { rate } = req.body;
+
+    if (!rate || rate <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rate must be a positive number'
+      });
+    }
+
+    await QuestSettings.updateSetting('point_conversion_rate', rate, req.user._id);
+
+    return res.json({
+      success: true,
+      data: {
+        rate: rate
+      },
+      message: 'Point conversion rate updated successfully'
+    });
+  } catch (error) {
+    console.error('Error updating point conversion rate:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update conversion rate',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/v2/admin/users/:userId/bank-account/verify
+ * Verify user's bank account (admin only)
+ */
+router.put('/users/:userId/bank-account/verify', auth, adminAuth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { verified, notes } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (!user.bankAccount || !user.bankAccount.accountName) {
+      return res.status(400).json({
+        success: false,
+        message: 'User does not have bank account information'
+      });
+    }
+
+    user.bankAccount.verified = verified === true;
+    if (verified === true) {
+      user.bankAccount.verifiedAt = new Date();
+      user.bankAccount.verifiedBy = req.user._id;
+    } else {
+      user.bankAccount.verifiedAt = null;
+      user.bankAccount.verifiedBy = null;
+    }
+    await user.save();
+
+    return res.json({
+      success: true,
+      data: {
+        userId: user._id,
+        bankAccount: {
+          accountName: user.bankAccount.accountName,
+          accountNumber: user.bankAccount.accountNumber,
+          bankName: user.bankAccount.bankName,
+          verified: user.bankAccount.verified,
+          verifiedAt: user.bankAccount.verifiedAt
+        }
+      },
+      message: `Bank account ${verified ? 'verified' : 'unverified'} successfully`
+    });
+  } catch (error) {
+    console.error('Error verifying bank account:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to verify bank account',
       error: error.message
     });
   }

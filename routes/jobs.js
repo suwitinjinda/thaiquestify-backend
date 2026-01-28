@@ -6,11 +6,13 @@ const User = require('../models/User');
 const QuestSettings = require('../models/QuestSettings');
 const PointTransaction = require('../models/PointTransaction');
 const PointSystem = require('../models/PointSystem');
+const ShopFeeSplitRecord = require('../models/ShopFeeSplitRecord');
 const { auth } = require('../middleware/auth');
 
 /**
  * @route   GET /api/jobs
- * @desc    Get all jobs (with filters)
+ * @desc    Get all jobs (with filters, search, pagination)
+ * @query   category, province, status, employer, shop, q (search jobNumber/title), page, limit
  * @access  Public
  */
 router.get('/', async (req, res) => {
@@ -21,6 +23,7 @@ router.get('/', async (req, res) => {
       status,
       employer,
       shop,
+      q,
       page = 1,
       limit = 20,
     } = req.query;
@@ -29,19 +32,32 @@ router.get('/', async (req, res) => {
 
     if (category) query.category = category;
     if (province) query['location.province'] = province;
-    // Only filter by status if explicitly provided (don't default to 'open')
     if (status) query.status = status;
     if (employer) query.employer = employer;
     if (shop) query.shop = shop;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    if (q && typeof q === 'string' && q.trim()) {
+      const trimQ = q.trim();
+      const numMatch = /^JOB\d+$/i.test(trimQ);
+      if (numMatch) {
+        query.jobNumber = new RegExp(`^${trimQ.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+      } else {
+        query.$or = [
+          { title: new RegExp(trimQ.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') },
+          { jobNumber: new RegExp(trimQ.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') },
+        ];
+      }
+    }
+
+    const skip = Math.max(0, (parseInt(page, 10) - 1) * parseInt(limit, 10));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
 
     const jobs = await Job.find(query)
       .populate('employer', 'name email phone')
       .populate('shop', 'shopName shopId')
       .populate('worker', 'name email phone')
       .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
+      .limit(limitNum)
       .skip(skip);
 
     const total = await Job.countDocuments(query);
@@ -51,13 +67,44 @@ router.get('/', async (req, res) => {
       data: jobs,
       pagination: {
         total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        pages: Math.ceil(total / parseInt(limit)),
+        page: parseInt(page, 10) || 1,
+        limit: limitNum,
+        pages: Math.ceil(total / limitNum) || 1,
       },
     });
   } catch (error) {
     console.error('Error fetching jobs:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูลงาน',
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * @route   GET /api/jobs/by-number/:jobNumber
+ * @desc    Get job by jobNumber (e.g. JOB20260118000001)
+ * @access  Public
+ */
+router.get('/by-number/:jobNumber', async (req, res) => {
+  try {
+    const jobNumber = req.params.jobNumber?.trim();
+    if (!jobNumber) {
+      return res.status(400).json({ success: false, message: 'กรุณาระบุเลขที่งาน (jobNumber)' });
+    }
+    const job = await Job.findOne({ jobNumber: new RegExp(`^${jobNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') })
+      .populate('employer', 'name email phone')
+      .populate('shop', 'shopName shopId phone address coordinates')
+      .populate('worker', 'name email phone');
+
+    if (!job) {
+      return res.status(404).json({ success: false, message: 'ไม่พบงาน' });
+    }
+
+    res.json({ success: true, data: job });
+  } catch (error) {
+    console.error('Error fetching job by number:', error);
     res.status(500).json({
       success: false,
       message: 'เกิดข้อผิดพลาดในการดึงข้อมูลงาน',
@@ -134,6 +181,54 @@ router.post('/', auth, async (req, res) => {
     const populatedJob = await Job.findById(job._id)
       .populate('employer', 'name email phone')
       .populate('shop', 'shopName shopId');
+
+    // Notify users within job search radius (fire-and-forget)
+    const coords = job.location?.coordinates;
+    const lat = coords?.latitude;
+    const lng = coords?.longitude;
+    const radiusKm = typeof job.searchRadius === 'number' && job.searchRadius > 0 ? job.searchRadius : 10;
+    const employerId = job.employer._id || job.employer;
+
+    if (lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng)) {
+      setImmediate(async () => {
+        try {
+          const deliveryAssignmentService = require('../services/deliveryAssignmentService');
+          const { createJobNewNearbyNotification } = require('../utils/notificationHelper');
+          const candidates = await User.find({
+            _id: { $ne: employerId },
+            'coordinates.latitude': { $exists: true, $ne: null },
+            'coordinates.longitude': { $exists: true, $ne: null },
+          })
+            .select('_id coordinates')
+            .limit(500)
+            .lean();
+
+          const within = [];
+          for (const u of candidates) {
+            const d = deliveryAssignmentService.calculateDistance(
+              lat,
+              lng,
+              u.coordinates.latitude,
+              u.coordinates.longitude
+            );
+            if (d <= radiusKm) within.push({ _id: u._id, distance: d });
+          }
+          within.sort((a, b) => a.distance - b.distance);
+          const toNotify = within.slice(0, 200);
+
+          await Promise.allSettled(
+            toNotify.map(({ _id, distance }) =>
+              createJobNewNearbyNotification(_id, job.title, job.jobNumber, job._id, distance)
+            )
+          );
+          if (toNotify.length > 0) {
+            console.log(`   📢 Sent "job new nearby" to ${toNotify.length} users within ${radiusKm} km`);
+          }
+        } catch (e) {
+          console.warn('⚠️ Job new-nearby notifications failed:', e?.message || e);
+        }
+      });
+    }
 
     res.status(201).json({
       success: true,
@@ -302,6 +397,22 @@ router.post('/:id/apply', auth, async (req, res) => {
 
     await application.save();
 
+    // Notify employer that someone applied
+    try {
+      const workerUser = await User.findById(userId).select('name').lean();
+      const { createJobApplicationNewNotification } = require('../utils/notificationHelper');
+      await createJobApplicationNewNotification(
+        job.employer,
+        workerUser?.name || 'มีผู้สมัคร',
+        job.title,
+        job.jobNumber,
+        job._id,
+        application._id
+      );
+    } catch (notifErr) {
+      console.warn('⚠️ Job application new notification failed:', notifErr?.message || notifErr);
+    }
+
     res.status(201).json({
       success: true,
       message: 'สมัครงานสำเร็จ',
@@ -356,7 +467,7 @@ router.get('/applications/my', auth, async (req, res) => {
         try {
           const User = require('../models/User');
           const job = await Job.findById(jobId)
-            .select('title description category location salary status startDate endDate employer requiredWorkers ageRequirement contact');
+            .select('title description category location salary status startDate endDate employer requiredWorkers ageRequirement contact jobNumber searchRadius');
           
           if (job) {
             // Debug: Check employer before populate
@@ -557,6 +668,18 @@ router.post('/applications/:applicationId/accept', auth, async (req, res) => {
       status: 'completed'
     });
 
+    // Record platform revenue from job application fee (100% platform, 0% partner)
+    await ShopFeeSplitRecord.create({
+      feeType: 'job_application_fee',
+      feeAmount: applicationFee,
+      platformShare: applicationFee, // 100% goes to platform
+      partnerShare: 0, // No partner commission for job fees
+      job: job._id,
+      jobApplication: application._id,
+      jobNumber: job.jobNumber || '',
+      jobTitle: job.title || '',
+    });
+
     console.log(`   💰 หัก ${applicationFee} points จากคนงาน ${worker.name} และเพิ่มให้ PointSystem สำหรับค่าธรรมเนียมการสมัครงาน`);
 
     // Update application status
@@ -613,6 +736,17 @@ router.post('/applications/:applicationId/accept', auth, async (req, res) => {
             description: `ค่านายหน้าจ้างงานสำหรับ "${job.title}" (ได้ลูกจ้างครบ ${job.acceptedWorkers}/${job.requiredWorkers})`,
             status: 'completed'
           });
+
+          // Record platform revenue from job commission fee (100% platform, 0% partner)
+          await ShopFeeSplitRecord.create({
+            feeType: 'job_commission_fee',
+            feeAmount: jobCommissionFee,
+            platformShare: jobCommissionFee, // 100% goes to platform
+            partnerShare: 0, // No partner commission for job fees
+            job: job._id,
+            jobNumber: job.jobNumber || '',
+            jobTitle: job.title || '',
+          });
           
           console.log(`   💰 หัก ${jobCommissionFee} points จากนายจ้าง ${employerUser.name} และเพิ่มให้ PointSystem สำหรับค่านายหน้าจ้างงาน`);
         }
@@ -622,6 +756,20 @@ router.post('/applications/:applicationId/accept', auth, async (req, res) => {
     }
     
     await job.save();
+
+    try {
+      const { createJobApplicationAcceptedNotification } = require('../utils/notificationHelper');
+      const workerId = application.worker._id || application.worker;
+      await createJobApplicationAcceptedNotification(
+        workerId,
+        job.title,
+        job.jobNumber,
+        job._id,
+        application._id
+      );
+    } catch (notifErr) {
+      console.warn('⚠️ Job accept notification failed:', notifErr?.message || notifErr);
+    }
 
     res.json({
       success: true,
@@ -686,6 +834,20 @@ router.post('/applications/:applicationId/reject', auth, async (req, res) => {
     // Update application status
     application.status = 'rejected';
     await application.save();
+
+    try {
+      const { createJobApplicationRejectedNotification } = require('../utils/notificationHelper');
+      const workerId = application.worker._id || application.worker;
+      await createJobApplicationRejectedNotification(
+        workerId,
+        job.title,
+        job.jobNumber,
+        job._id,
+        application._id
+      );
+    } catch (notifErr) {
+      console.warn('⚠️ Job reject notification failed:', notifErr?.message || notifErr);
+    }
 
     res.json({
       success: true,
@@ -760,25 +922,35 @@ router.post('/applications/:applicationId/complete', auth, async (req, res) => {
     application.status = 'completed';
     application.completedAt = new Date();
     
-    // Calculate payment (you may want to implement actual payment processing here)
+    // Payment: worker receives full salary. No completion commission (only job_application_fee + job_commission_fee apply; those go to platform income).
     const salaryAmount = job.salary.amount || 0;
-    const commissionRate = 0.05; // 5% commission
-    const commissionFee = salaryAmount * commissionRate;
-    const workerReceived = salaryAmount - commissionFee;
+    const workerReceived = salaryAmount;
     
-    // Store payment info
     application.payment = {
       jobAmount: salaryAmount,
-      commissionFee,
+      commissionFee: 0,
       workerReceived,
       paidAt: new Date(),
     };
     
     await application.save();
 
-    // Update job status
     job.status = 'completed';
     await job.save();
+
+    try {
+      const { createJobApplicationCompletedNotification } = require('../utils/notificationHelper');
+      const workerId = application.worker._id || application.worker;
+      await createJobApplicationCompletedNotification(
+        workerId,
+        job.title,
+        job.jobNumber,
+        job._id,
+        application._id
+      );
+    } catch (notifErr) {
+      console.warn('⚠️ Job complete notification failed:', notifErr?.message || notifErr);
+    }
 
     res.json({
       success: true,
@@ -787,7 +959,7 @@ router.post('/applications/:applicationId/complete', auth, async (req, res) => {
         application,
         payment: {
           totalAmount: salaryAmount,
-          commissionFee,
+          commissionFee: 0,
           workerReceived,
         },
       },
