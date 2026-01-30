@@ -10,10 +10,6 @@ const { auth } = require('../middleware/auth');
 const { adminAuth } = require('../middleware/adminAuth');
 const shopController = require('../controllers/shopController');
 
-// Debug: list loaded controller functions
-console.log("shopController loaded:", Object.keys(shopController));
-
-
 // Option 1: Use Controller functions (Recommended)
 router.get(
   '/admin/shops',
@@ -26,17 +22,16 @@ router.get(
 router.put('/admin/shops/:id/status', auth, async (req, res) => {
   try {
     const shopId = req.params.id;
-    console.log(`🔍 Looking for shop with ID: ${shopId}`);
-    
+
     if (req.user.userType !== 'admin') {
-      return res.status(403).json({ 
+      return res.status(403).json({
         success: false,
-        message: 'Access denied. Admin only.' 
+        message: 'Access denied. Admin only.'
       });
     }
 
     const { status, rejectionReason } = req.body;
-    
+
     // Validate status
     const validStatuses = ['pending', 'active', 'rejected', 'suspended'];
     if (!validStatuses.includes(status)) {
@@ -50,10 +45,7 @@ router.put('/admin/shops/:id/status', auth, async (req, res) => {
     let shop = await Shop.findOne({ _id: shopId });
 
     if (!shop) {
-      // Log all shops to debug
       const allShops = await Shop.find().select('_id shopName status');
-      console.log(`🔍 All available shops:`, allShops);
-      
       return res.status(404).json({
         success: false,
         message: `Shop not found with ID: ${shopId}. Available shops: ${allShops.length}`
@@ -64,20 +56,19 @@ router.put('/admin/shops/:id/status', auth, async (req, res) => {
     if (status === 'active' && !shop.shopId) {
       const { generateUniqueShopId } = require('../utils/shopIdGenerator');
       const uniqueShopId = await generateUniqueShopId();
-      
+
       shop.shopId = uniqueShopId;
-      console.log(`✅ Generated unique shop ID: ${uniqueShopId} for shop: ${shop.shopName}`);
-      
+
       // Images should already be uploaded to GCP when shop was submitted
       // If images are still base64 or not URLs, upload them now
       if (shop.images && shop.images.length > 0) {
         try {
           // Check if images are base64 strings or not URLs
-          const needsUpload = shop.images.some(img => 
-            typeof img === 'object' || 
+          const needsUpload = shop.images.some(img =>
+            typeof img === 'object' ||
             (typeof img === 'string' && (img.startsWith('data:') || !img.includes('storage.googleapis.com')))
           );
-          
+
           if (needsUpload) {
             const { uploadShopImages } = require('../utils/gcpStorage');
             const imageBuffers = shop.images.map(img => {
@@ -96,14 +87,11 @@ router.put('/admin/shops/:id/status', auth, async (req, res) => {
               }
               return null;
             }).filter(Boolean);
-            
+
             if (imageBuffers.length > 0) {
               const uploadedUrls = await uploadShopImages(imageBuffers, uniqueShopId);
               shop.images = uploadedUrls;
-              console.log(`✅ Uploaded ${uploadedUrls.length} images to GCP for shop ${uniqueShopId}`);
             }
-          } else {
-            console.log(`✅ Shop images already uploaded to GCP`);
           }
         } catch (uploadError) {
           console.error('❌ Error uploading images to GCP:', uploadError);
@@ -120,7 +108,7 @@ router.put('/admin/shops/:id/status', auth, async (req, res) => {
     if (status === 'active') {
       shop.approvedAt = new Date();
       shop.approvedBy = req.user.id;
-      
+
       // Update ShopRequest status to 'registered' when shop is approved
       try {
         const ShopRequest = require('../models/ShopRequest');
@@ -135,20 +123,20 @@ router.put('/admin/shops/:id/status', auth, async (req, res) => {
         console.error('❌ Error updating ShopRequest status:', requestError);
         // Continue with shop approval even if request update fails
       }
-      
+
       // Auto-create check-in quest for approved shop (similar to tourist quest)
       try {
         const Quest = require('../models/Quest');
         const QuestSettings = require('../models/QuestSettings');
         const User = require('../models/User');
-        
+
         // Check if quest already exists for this shop
         const existingQuest = await Quest.findOne({
           shopId: shop.shopId || shop._id.toString(),
           type: 'location_checkin',
           status: 'active'
         });
-        
+
         if (!existingQuest && shop.shopId) {
           // Get system user for createdBy field
           let systemUser = await User.findOne({ email: 'system@thaiquestify.com' });
@@ -161,10 +149,10 @@ router.put('/admin/shops/:id/status', auth, async (req, res) => {
             });
             await systemUser.save();
           }
-          
+
           // Get points from settings (default 10)
           const pointsSetting = await QuestSettings.getSetting('shop_checkin_points') || 10;
-          
+
           // Create check-in quest automatically
           const checkInQuest = new Quest({
             name: `เช็คอินที่ ${shop.shopName}`,
@@ -190,9 +178,8 @@ router.put('/admin/shops/:id/status', auth, async (req, res) => {
             createdBy: systemUser._id,
             instructions: `ไปที่ ${shop.shopName} และเช็คอินด้วย GPS location (ทำได้ครั้งเดียว)`
           });
-          
+
           await checkInQuest.save();
-          console.log(`✅ Auto-created check-in quest for shop ${shop.shopId}: ${checkInQuest._id}`);
         }
       } catch (questError) {
         console.error('❌ Error creating auto check-in quest:', questError);
@@ -204,8 +191,6 @@ router.put('/admin/shops/:id/status', auth, async (req, res) => {
     await shop.save();
     await shop.populate('partnerId', 'name email');
 
-    console.log(`✅ Shop ${shop.shopId || 'N/A'} status updated to: ${status}`);
-    
     res.json({
       success: true,
       message: `Shop ${status === 'active' ? 'approved' : 'rejected'} successfully`,
@@ -234,10 +219,10 @@ router.get('/admin/shops/revenue-statistics', auth, adminAuth, async (req, res) 
   try {
     const { period = 'daily' } = req.query; // 'daily', 'monthly', 'yearly'
     const Order = require('../models/Order');
-    
+
     const now = new Date();
     let startDate, endDate, groupFormat;
-    
+
     // Set date range and aggregation format based on period
     if (period === 'daily') {
       // Last 30 days
@@ -272,7 +257,7 @@ router.get('/admin/shops/revenue-statistics', auth, adminAuth, async (req, res) 
         message: 'Invalid period. Must be: daily, monthly, or yearly'
       });
     }
-    
+
     // Aggregate revenue by period
     const revenueData = await Order.aggregate([
       {
@@ -294,7 +279,7 @@ router.get('/admin/shops/revenue-statistics', auth, adminAuth, async (req, res) 
         $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 }
       }
     ]);
-    
+
     // Format data for frontend
     const formattedData = revenueData.map(item => {
       let label;
@@ -307,7 +292,7 @@ router.get('/admin/shops/revenue-statistics', auth, adminAuth, async (req, res) 
       } else {
         label = `${item._id.year}`;
       }
-      
+
       return {
         label,
         revenue: item.totalRevenue,
@@ -315,12 +300,12 @@ router.get('/admin/shops/revenue-statistics', auth, adminAuth, async (req, res) 
         avgOrderValue: Math.round(item.avgOrderValue * 100) / 100
       };
     });
-    
+
     // Calculate summary
     const totalRevenue = formattedData.reduce((sum, item) => sum + item.revenue, 0);
     const totalOrders = formattedData.reduce((sum, item) => sum + item.orderCount, 0);
     const avgRevenue = formattedData.length > 0 ? totalRevenue / formattedData.length : 0;
-    
+
     res.json({
       success: true,
       data: {
@@ -344,6 +329,28 @@ router.get('/admin/shops/revenue-statistics', auth, adminAuth, async (req, res) 
   }
 });
 
+// Get single shop by id (admin only) - must be after /admin/shops/statistics and /admin/shops/revenue-statistics
+router.get('/admin/shops/:id', auth, adminAuth, async (req, res) => {
+  try {
+    const shop = await Shop.findById(req.params.id)
+      .populate('ownerEmail', 'name email')
+      .populate('user', 'name email')
+      .populate('partnerId', 'name email')
+      .lean();
+    if (!shop) {
+      return res.status(404).json({ success: false, message: 'Shop not found' });
+    }
+    res.json({ success: true, data: shop });
+  } catch (error) {
+    console.error('Get admin shop by id error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error.message
+    });
+  }
+});
+
 // Get shop revenue statistics for specific shop (shop owner only)
 router.get('/shops/:shopId/revenue-statistics', auth, async (req, res) => {
   try {
@@ -352,7 +359,7 @@ router.get('/shops/:shopId/revenue-statistics', auth, async (req, res) => {
     const Order = require('../models/Order');
     const Shop = require('../models/Shop');
     const mongoose = require('mongoose');
-    
+
     // Find shop and verify ownership
     let shop;
     if (mongoose.Types.ObjectId.isValid(shopId) && shopId.length === 24) {
@@ -360,33 +367,33 @@ router.get('/shops/:shopId/revenue-statistics', auth, async (req, res) => {
     } else {
       shop = await Shop.findOne({ shopId: shopId });
     }
-    
+
     if (!shop) {
       return res.status(404).json({
         success: false,
         message: 'ไม่พบร้านค้า'
       });
     }
-    
+
     // Verify ownership: check if user owns this shop
     const userId = req.user.id || req.user._id;
-    const isOwner = shop.user?.toString() === userId.toString() || 
-                    shop.ownerEmail === req.user.email ||
-                    (shop.partnerId && req.user.partnerId && shop.partnerId.toString() === req.user.partnerId.toString());
-    
+    const isOwner = shop.user?.toString() === userId.toString() ||
+      shop.ownerEmail === req.user.email ||
+      (shop.partnerId && req.user.partnerId && shop.partnerId.toString() === req.user.partnerId.toString());
+
     if (!isOwner && req.user.userType !== 'admin') {
       return res.status(403).json({
         success: false,
         message: 'คุณไม่มีสิทธิ์เข้าถึงสถิติของร้านค้านี้'
       });
     }
-    
+
     // Get shop ObjectId for matching orders
     const shopObjectId = shop._id;
-    
+
     const now = new Date();
     let startDate, endDate, groupFormat;
-    
+
     // Set date range and aggregation format based on period
     if (period === 'daily') {
       startDate = new Date(now);
@@ -418,7 +425,7 @@ router.get('/shops/:shopId/revenue-statistics', auth, async (req, res) => {
         message: 'Invalid period. Must be: daily, monthly, or yearly'
       });
     }
-    
+
     // Aggregate revenue by period for this specific shop - แยกตาม orderType (dine_in vs delivery)
     const revenueData = await Order.aggregate([
       {
@@ -468,7 +475,7 @@ router.get('/shops/:shopId/revenue-statistics', auth, async (req, res) => {
         $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 }
       }
     ]);
-    
+
     // Format data for frontend
     const formattedData = revenueData.map(item => {
       let label;
@@ -481,7 +488,7 @@ router.get('/shops/:shopId/revenue-statistics', auth, async (req, res) => {
       } else {
         label = `${item._id.year}`;
       }
-      
+
       return {
         label,
         revenue: item.totalRevenue,
@@ -495,7 +502,7 @@ router.get('/shops/:shopId/revenue-statistics', auth, async (req, res) => {
         deliveryAvgOrderValue: item.deliveryCount > 0 ? Math.round((item.deliveryRevenue / item.deliveryCount) * 100) / 100 : 0
       };
     });
-    
+
     // Calculate summary - แยกตาม orderType
     const totalRevenue = formattedData.reduce((sum, item) => sum + item.revenue, 0);
     const totalOrders = formattedData.reduce((sum, item) => sum + item.orderCount, 0);
@@ -504,7 +511,7 @@ router.get('/shops/:shopId/revenue-statistics', auth, async (req, res) => {
     const totalDeliveryRevenue = formattedData.reduce((sum, item) => sum + item.deliveryRevenue, 0);
     const totalDeliveryOrders = formattedData.reduce((sum, item) => sum + item.deliveryCount, 0);
     const avgRevenue = formattedData.length > 0 ? totalRevenue / formattedData.length : 0;
-    
+
     res.json({
       success: true,
       data: {
@@ -550,30 +557,29 @@ router.get(
 router.get('/owner/:email/shop', auth, async (req, res) => {
   try {
     const { email } = req.params;
-    
-    console.log(`🛍️ Fetching shop for owner email: ${email}`);
-    
+    const decodedEmail = decodeURIComponent(email);
+
     // Allow users to view their own shop (by email match)
     // Also allow admins to view any shop
     if (req.user.userType === 'shop') {
       // Shop owners can only access their own shop
       if (req.user.email !== decodedEmail) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           success: false,
-          message: 'Access denied. You can only view your own shop.' 
+          message: 'Access denied. You can only view your own shop.'
         });
       }
     } else if (req.user.userType !== 'admin') {
       // Regular users (customer) can only view their own shop
       if (req.user.email !== decodedEmail) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           success: false,
-          message: 'Access denied. You can only view your own shop.' 
+          message: 'Access denied. You can only view your own shop.'
         });
       }
     }
 
-    const shop = await Shop.findOne({ 
+    const shop = await Shop.findOne({
       $or: [
         { ownerEmail: decodedEmail },
         { 'user.email': decodedEmail }
@@ -582,13 +588,11 @@ router.get('/owner/:email/shop', auth, async (req, res) => {
     }).populate('user', 'name email');
 
     if (!shop) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        message: 'Shop not found for this email' 
+        message: 'Shop not found for this email'
       });
     }
-
-    console.log(`✅ Found shop: ${shop.shopName} for email: ${decodedEmail}`);
 
     res.json({
       success: true,
@@ -597,10 +601,10 @@ router.get('/owner/:email/shop', auth, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Get shop by email error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      message: 'Server error', 
-      error: error.message 
+      message: 'Server error',
+      error: error.message
     });
   }
 });
@@ -610,25 +614,22 @@ router.get('/owner/:email/shops', auth, async (req, res) => {
   try {
     const { email } = req.params;
     const decodedEmail = decodeURIComponent(email);
-    
-    console.log(`🛍️ Fetching shops for owner email: ${decodedEmail}`);
-    console.log(`🔍 User email: ${req.user.email}, Requested email: ${decodedEmail}`);
-    
+
     // Allow users to view their own shops (by email match)
     // Also allow admins to view any shops
     if (req.user.userType === 'shop') {
       if (req.user.email !== decodedEmail) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           success: false,
-          message: 'Access denied. You can only view your own shops.' 
+          message: 'Access denied. You can only view your own shops.'
         });
       }
     } else if (req.user.userType !== 'admin') {
       // Regular users (customer) can only view their own shops
       if (req.user.email !== decodedEmail) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           success: false,
-          message: 'Access denied. You can only view your own shops.' 
+          message: 'Access denied. You can only view your own shops.'
         });
       }
     }
@@ -636,24 +637,22 @@ router.get('/owner/:email/shops', auth, async (req, res) => {
     // Find user by email first to get ObjectId
     const User = require('../models/User');
     const ownerUser = await User.findOne({ email: decodedEmail }).select('_id');
-    
+
     // Build query: match by ownerEmail OR user ObjectId
     const queryConditions = [
       { ownerEmail: decodedEmail }
     ];
-    
+
     if (ownerUser?._id) {
       queryConditions.push({ user: ownerUser._id });
     }
 
-    const shops = await Shop.find({ 
+    const shops = await Shop.find({
       $or: queryConditions,
       isDeleted: { $ne: true }
     })
-    .populate('user', 'name email')
-    .sort({ createdAt: -1 }); // Sort by newest first
-
-    console.log(`✅ Found ${shops.length} shops for email: ${decodedEmail} (checked ownerEmail and user ObjectId)`);
+      .populate('user', 'name email')
+      .sort({ createdAt: -1 }); // Sort by newest first
 
     // Convert image URLs to signed URLs for frontend access
     const { getSignedUrls } = require('../utils/gcpStorage');
@@ -680,10 +679,10 @@ router.get('/owner/:email/shops', auth, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Get shops by email error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      message: 'Server error', 
-      error: error.message 
+      message: 'Server error',
+      error: error.message
     });
   }
 });
@@ -692,20 +691,19 @@ router.get('/owner/:email/shops', auth, async (req, res) => {
 router.get('/active', async (req, res) => {
   try {
     const { province, limit = 1000 } = req.query;
-    console.log('🔄 Fetching active shops for province:', province);
 
-    let query = { 
+    let query = {
       status: 'active',
       isDeleted: { $ne: true }
     };
-    
+
     if (province) {
       // Normalize province name for matching
       const normalizeProvince = (name) => {
         if (!name) return '';
         return name.replace(/จังหวัด/g, '').replace(/ฯ/g, '').trim();
       };
-      
+
       const normalizedProvince = normalizeProvince(province);
       query.$or = [
         { province: normalizedProvince },
@@ -767,23 +765,21 @@ router.get('/region/:region', async (req, res) => {
   try {
     const { region } = req.params;
     const { limit = 100 } = req.query;
-    
-    console.log('🔄 Fetching shops for region:', region);
 
     // Define province mapping for regions
     const regionProvinces = {
-      'กลาง': ['กรุงเทพมหานคร', 'นนทบุรี', 'ปทุมธานี', 'สมุทรปราการ', 'พระนครศรีอยุธยา', 
-               'อ่างทอง', 'ลพบุรี', 'สิงห์บุรี', 'ชัยนาท', 'สระบุรี'],
+      'กลาง': ['กรุงเทพมหานคร', 'นนทบุรี', 'ปทุมธานี', 'สมุทรปราการ', 'พระนครศรีอยุธยา',
+        'อ่างทอง', 'ลพบุรี', 'สิงห์บุรี', 'ชัยนาท', 'สระบุรี'],
       'เหนือ': ['เชียงใหม่', 'เชียงราย', 'ลำพูน', 'ลำปาง', 'แพร่', 'น่าน', 'พะเยา', 'แม่ฮ่องสอน'],
-      'ตะวันออกเฉียงเหนือ': ['ขอนแก่น', 'อุบลราชธานี', 'นครราชสีมา', 'อุดรธานี', 'มหาสารคาม', 
-                            'ร้อยเอ็ด', 'กาฬสินธุ์', 'สกลนคร', 'บุรีรัมย์', 'สุรินทร์'],
+      'ตะวันออกเฉียงเหนือ': ['ขอนแก่น', 'อุบลราชธานี', 'นครราชสีมา', 'อุดรธานี', 'มหาสารคาม',
+        'ร้อยเอ็ด', 'กาฬสินธุ์', 'สกลนคร', 'บุรีรัมย์', 'สุรินทร์'],
       'ตะวันออก': ['ชลบุรี', 'ระยอง', 'จันทบุรี', 'ตราด', 'ฉะเชิงเทรา', 'ปราจีนบุรี', 'สระแก้ว'],
       'ตะวันตก': ['กาญจนบุรี', 'ราชบุรี', 'เพชรบุรี', 'ประจวบคีรีขันธ์', 'ตาก', 'สุพรรณบุรี'],
       'ใต้': ['ภูเก็ต', 'สงขลา', 'นครศรีธรรมราช', 'สุราษฎร์ธานี', 'กระบี่', 'พังงา', 'ตรัง']
     };
 
     const provinces = regionProvinces[region] || [];
-    
+
     if (provinces.length === 0) {
       return res.json({
         success: true,
@@ -799,11 +795,9 @@ router.get('/region/:region', async (req, res) => {
     })
       // .select('name description province district images category status')
       // .select('shopId shopName shopType description province district address phone businessHours status images')
-    .limit(parseInt(limit))
-    .lean();
-    console.log(shops)
-    console.log(`✅ Found ${shops.length} shops in region: ${region}`);
-    
+      .limit(parseInt(limit))
+      .lean();
+
     res.json({
       success: true,
       data: shops,
@@ -826,7 +820,6 @@ router.get('/region/:region', async (req, res) => {
 router.get('/:shopId', async (req, res) => {
   try {
     const { shopId } = req.params;
-    console.log('🏪 Fetching shop by ID:', shopId);
 
     const shop = await Shop.findById(shopId).lean();
 
@@ -850,8 +843,6 @@ router.get('/:shopId', async (req, res) => {
       totalQuests: activeQuestsCount // You can add total quests count if needed
     };
 
-    console.log(`✅ Found shop: ${shop.shopName} with ${activeQuestsCount} active quests`);
-    
     res.json({
       success: true,
       data: shopData
@@ -872,8 +863,6 @@ router.get('/user/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const { limit = 100, page = 1 } = req.query;
-    
-    console.log('👤 Fetching shops for user:', userId);
 
     // Calculate skip for pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -883,10 +872,10 @@ router.get('/user/:userId', async (req, res) => {
       partnerId: userId,
       status: { $in: ['active', 'inactive', 'pending'] } // Include all statuses
     })
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(parseInt(limit))
-    .lean();
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .lean();
 
     // Get total count for pagination
     const totalShops = await Shop.countDocuments({
@@ -905,8 +894,6 @@ router.get('/user/:userId', async (req, res) => {
         }
       }
     ]);
-
-    console.log(`✅ Found ${shops.length} shops for user ${userId}`);
 
     res.json({
       success: true,
@@ -974,7 +961,6 @@ router.put('/:id/status-owner', auth, async (req, res) => {
     shop.updatedAt = new Date();
     await shop.save();
 
-    console.log(`✅ Owner updated shop ${shop.shopId || shop._id} status to: ${status}`);
 
     res.json({
       success: true,
@@ -1153,9 +1139,7 @@ router.put('/:id', auth, async (req, res) => {
                 mimeType: img.type || img.mimeType || 'image/jpeg',
               });
             } else if (img.uri.startsWith('file://') || img.uri.startsWith('content://')) {
-              // Local file - would need to read and convert
-              // For now, skip and keep existing images
-              console.log('Local image file detected, skipping upload for now');
+              // Local file - would need to read and convert; skip for now
             }
           }
         }
@@ -1177,7 +1161,6 @@ router.put('/:id', auth, async (req, res) => {
     shop.updatedAt = new Date();
     await shop.save();
 
-    console.log(`✅ Owner updated shop info: ${shop.shopId || shop._id}`);
 
     // Convert image URLs to signed URLs for frontend access
     let shopData = shop.toObject();
@@ -1270,10 +1253,6 @@ router.get('/:id/delivery-workers', auth, async (req, res) => {
       .select('name email phone photo deliveryProfile')
       .limit(50)
       .lean();
-
-    console.log(
-      `✅ Found ${deliveryWorkers.length} delivery workers within ${shop.deliveryRadiusKm}km of shop ${shop.shopId || shop._id}`
-    );
 
     res.json({
       success: true,
@@ -1662,9 +1641,8 @@ router.delete('/:id', auth, adminAuth, async (req, res) => {
           }
           return Promise.resolve();
         });
-        
+
         await Promise.all(deletePromises);
-        console.log(`✅ Deleted ${shop.images.length} images from GCP for shop ${shopId}`);
       } catch (deleteError) {
         console.error('❌ Error deleting images from GCP:', deleteError);
         // Continue with shop deletion even if image deletion fails
@@ -1673,9 +1651,9 @@ router.delete('/:id', auth, adminAuth, async (req, res) => {
 
     // Delete shop from database
     await Shop.findByIdAndDelete(shopId);
-    
+
     console.log(`✅ Shop ${shopId} deleted successfully`);
-    
+
     res.json({
       success: true,
       message: 'Shop deleted successfully'
@@ -1751,20 +1729,19 @@ router.post('/:id/upload-images', auth, async (req, res) => {
         });
       }
 
-                      if (imageBuffers.length > 0) {
-                        const uploadedUrls = await uploadShopImages(imageBuffers, shop.shopId);
-                        console.log(`✅ Uploaded ${uploadedUrls.length} images to GCP for shop ${shop.shopId}`);
+      if (imageBuffers.length > 0) {
+        const uploadedUrls = await uploadShopImages(imageBuffers, shop.shopId);
 
-                        // Convert to signed URLs for frontend access
-                        const { getSignedUrls } = require('../utils/gcpStorage');
-                        const signedUrls = await getSignedUrls(uploadedUrls);
+        // Convert to signed URLs for frontend access
+        const { getSignedUrls } = require('../utils/gcpStorage');
+        const signedUrls = await getSignedUrls(uploadedUrls);
 
-                        res.json({
-                          success: true,
-                          urls: signedUrls,
-                          count: signedUrls.length,
-                        });
-                      } else {
+        res.json({
+          success: true,
+          urls: signedUrls,
+          count: signedUrls.length,
+        });
+      } else {
         res.status(400).json({
           success: false,
           message: 'No valid images to upload',

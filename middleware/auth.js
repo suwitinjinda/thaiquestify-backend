@@ -6,13 +6,13 @@ const _debug = () => process.env.DEBUG_AUTH === '1';
 const auth = async (req, res, next) => {
   try {
     const authHeader = req.header('Authorization');
-    
+
     // ตรวจสอบรูปแบบ header
     if (!authHeader) {
       if (_debug()) console.log('❌ No Authorization header');
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        message: 'No authorization header' 
+        message: 'No authorization header'
       });
     }
 
@@ -20,46 +20,46 @@ const auth = async (req, res, next) => {
     const parts = authHeader.split(' ');
     if (parts.length !== 2 || parts[0] !== 'Bearer') {
       if (_debug()) console.log('❌ Invalid Authorization header format');
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        message: 'Invalid authorization format. Use: Bearer <token>' 
+        message: 'Invalid authorization format. Use: Bearer <token>'
       });
     }
 
     const token = parts[1];
-    console.log('🔐 Token received:', token ? `"${token}" (length: ${token.length})` : 'Empty');
+    if (_debug()) console.log('🔐 Token received:', token ? `(length: ${token.length})` : 'Empty');
 
     if (!token || token === 'null' || token === 'undefined') {
-      console.log('❌ No token provided');
-      return res.status(401).json({ 
+      if (_debug()) console.log('❌ No token provided');
+      return res.status(401).json({
         success: false,
-        message: 'No token provided' 
+        message: 'No token provided'
       });
     }
 
     // ✅ FORMAT 1: "user-token-{userId}-{timestamp}"
     if (token.startsWith('user-token-')) {
       const tokenParts = token.split('-');
-      
+
       if (tokenParts.length >= 4) {
         const userId = tokenParts[2]; // user-token-[userId]-timestamp
-        
+
         try {
           const user = await User.findById(userId).select('_id name email userType partnerCode partnerId isActive');
-          
+
           if (!user) {
             if (_debug()) console.log('❌ User not found for user-token');
-            return res.status(401).json({ 
+            return res.status(401).json({
               success: false,
-              message: 'User not found' 
+              message: 'User not found'
             });
           }
 
           if (!user.isActive) {
-            console.log('❌ User account is inactive');
-            return res.status(401).json({ 
+            if (_debug()) console.log('❌ User account is inactive');
+            return res.status(401).json({
               success: false,
-              message: 'Account is inactive' 
+              message: 'Account is inactive'
             });
           }
 
@@ -75,19 +75,19 @@ const auth = async (req, res, next) => {
 
           console.log(`✅ User-token authentication successful for: ${user.email} (${user.userType})`);
           return next();
-          
+
         } catch (dbError) {
           console.error('❌ Database error during user-token auth:', dbError);
-          return res.status(500).json({ 
+          return res.status(500).json({
             success: false,
-            message: 'Database error during authentication' 
+            message: 'Database error during authentication'
           });
         }
       } else {
         if (_debug()) console.log('❌ Invalid user-token format');
-        return res.status(401).json({ 
+        return res.status(401).json({
           success: false,
-          message: 'Invalid token format' 
+          message: 'Invalid token format'
         });
       }
     }
@@ -95,23 +95,23 @@ const auth = async (req, res, next) => {
     // ✅ FORMAT 2: "auto-login-{userId}"
     if (token.startsWith('auto-login-')) {
       const userId = token.replace('auto-login-', '');
-      
+
       try {
         const user = await User.findById(userId).select('_id name email userType partnerCode partnerId isActive');
-        
+
         if (!user) {
           if (_debug()) console.log('❌ User not found for auto-login');
-          return res.status(401).json({ 
+          return res.status(401).json({
             success: false,
-            message: 'User not found' 
+            message: 'User not found'
           });
         }
 
         if (!user.isActive) {
           if (_debug()) console.log('❌ User account is inactive');
-          return res.status(401).json({ 
+          return res.status(401).json({
             success: false,
-            message: 'Account is inactive' 
+            message: 'Account is inactive'
           });
         }
 
@@ -125,14 +125,14 @@ const auth = async (req, res, next) => {
           partnerId: user.partnerId
         };
 
-        console.log(`✅ Auto-login successful for: ${user.email} (${user.userType})`);
+        if (_debug()) console.log(`✅ Auto-login: ${user.email}`);
         return next();
-        
+
       } catch (dbError) {
         console.error('❌ Database error during auto-login:', dbError);
-        return res.status(500).json({ 
+        return res.status(500).json({
           success: false,
-          message: 'Database error during authentication' 
+          message: 'Database error during authentication'
         });
       }
     }
@@ -141,22 +141,22 @@ const auth = async (req, res, next) => {
     try {
       const JWT_SECRET = process.env.JWT_SECRET || 'your-fallback-secret-key-for-development';
       const decoded = jwt.verify(token, JWT_SECRET);
-      
+
       const user = await User.findById(decoded.id || decoded._id || decoded.userId).select('_id name email userType partnerCode partnerId isActive');
-      
+
       if (!user) {
         if (_debug()) console.log('❌ User not found in database for JWT token');
-        return res.status(401).json({ 
+        return res.status(401).json({
           success: false,
-          message: 'User not found' 
+          message: 'User not found'
         });
       }
 
       if (!user.isActive) {
         if (_debug()) console.log('❌ User account is inactive');
-        return res.status(401).json({ 
+        return res.status(401).json({
           success: false,
-          message: 'Account is inactive' 
+          message: 'Account is inactive'
         });
       }
 
@@ -171,10 +171,10 @@ const auth = async (req, res, next) => {
       };
 
       next();
-      
+
     } catch (jwtError) {
       if (_debug()) console.log('❌ JWT verification failed:', jwtError.message);
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
         message: 'Invalid token format. Supported formats: user-token-*, auto-login-*, or valid JWT',
         errorType: jwtError.name
@@ -183,9 +183,9 @@ const auth = async (req, res, next) => {
 
   } catch (error) {
     console.error('❌ Auth middleware unexpected error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      message: 'Server error in authentication' 
+      message: 'Server error in authentication'
     });
   }
 };

@@ -9,7 +9,7 @@ const pointTransactionSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: ['claim', 'refund', 'adjustment', 'new_user', 'tourist_quest', 'admin_adjustment', 'streak_milestone', 'job_application_fee', 'job_commission_fee', 'reward', 'deduction', 'order_delivery', 'buy', 'withdraw'],
+    enum: ['claim', 'refund', 'adjustment', 'new_user', 'tourist_quest', 'admin_adjustment', 'streak_milestone', 'job_application_fee', 'job_commission_fee', 'reward', 'deduction', 'order_delivery', 'buy', 'withdraw', 'campaign_shop'],
     index: true
   },
   

@@ -189,7 +189,7 @@ async function getSignedUrl(fileUrl) {
         console.warn(`⚠️ File missing or sign failed: ${fileName.substring(0, 60)}…`);
       }
       // If input was a path (e.g. shops/xxx/y.jpg), return public URL so clients can try loading it when bucket allows public read
-      if (fileName === baseUrl && (baseUrl.startsWith('shops/') || baseUrl.startsWith('tourist-attractions/'))) {
+      if (fileName === normalized || normalized.startsWith('shops/') || normalized.startsWith('tourist-attractions/') || !normalized.startsWith('http')) {
         return `https://storage.googleapis.com/${BUCKET_NAME}/${fileName}`;
       }
       return fileUrl;

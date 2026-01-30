@@ -37,7 +37,7 @@ router.post('/', auth, async (req, res) => {
     // Find available partners in the same province
     const Partner = require('../models/Partner');
     const User = require('../models/User');
-    
+
     // Get all approved partners in the same province
     const partners = await Partner.find({
       status: 'approved',
@@ -69,19 +69,19 @@ router.post('/', auth, async (req, res) => {
 
     // NEW LOGIC: Assign to partner with least shops (if equal, random)
     const Shop = require('../models/Shop');
-    
+
     // Get all partner info with shop counts
     const partnerInfoWithShopCounts = await Promise.all(
       partners.map(async (p) => {
         const userId = p.userId?._id || p.userId;
         if (!userId) return null;
-        
+
         // Count active shops for this partner
         const shopCount = await Shop.countDocuments({
           partnerId: userId,
           status: 'active'
         });
-        
+
         return {
           userId: userId.toString(),
           partnerCode: p.partnerCode || null,
@@ -89,19 +89,19 @@ router.post('/', auth, async (req, res) => {
         };
       })
     );
-    
+
     // Filter out null entries
     const validPartners = partnerInfoWithShopCounts.filter(p => p !== null);
-    
+
     console.log(`🔍 Partner shop counts:`, validPartners.map(p => ({
       userId: p.userId,
       partnerCode: p.partnerCode || 'N/A',
       shopCount: p.shopCount
     })));
-    
+
     let assignedPartner = null;
     let assignedPartnerCode = null;
-    
+
     if (validPartners.length === 0) {
       // No valid partners (shouldn't happen, but handle gracefully)
       console.log(`⚠️ No valid partners found`);
@@ -114,9 +114,9 @@ router.post('/', auth, async (req, res) => {
       // Multiple partners: find the one with least shops
       const minShopCount = Math.min(...validPartners.map(p => p.shopCount));
       const partnersWithMinShops = validPartners.filter(p => p.shopCount === minShopCount);
-      
+
       console.log(`🔍 Partners with minimum shop count (${minShopCount}):`, partnersWithMinShops.length);
-      
+
       // If multiple partners have the same minimum shop count, random select
       if (partnersWithMinShops.length > 0) {
         const randomIndex = Math.floor(Math.random() * partnersWithMinShops.length);
@@ -137,8 +137,8 @@ router.post('/', auth, async (req, res) => {
     const cooldownUntil = null;
 
     // Ensure assignedPartner is ObjectId
-    const assignedPartnerId = mongoose.Types.ObjectId.isValid(assignedPartner) 
-      ? new mongoose.Types.ObjectId(assignedPartner) 
+    const assignedPartnerId = mongoose.Types.ObjectId.isValid(assignedPartner)
+      ? new mongoose.Types.ObjectId(assignedPartner)
       : assignedPartner;
 
     // Create shop request with assignment
@@ -216,12 +216,12 @@ router.get('/partner', auth, async (req, res) => {
     // Get partner's province from Partner model
     const Partner = require('../models/Partner');
     const partner = await Partner.findOne({ userId: req.user.id }).select('workingArea.province');
-    
+
     console.log(`🔍 Partner lookup for user ${req.user.id}:`, {
       found: !!partner,
       province: partner?.workingArea?.province || 'N/A'
     });
-    
+
     if (!partner || !partner.workingArea?.province) {
       console.log(`⚠️ Partner ${req.user.id} has no province set`);
       return res.json({
@@ -262,9 +262,9 @@ router.get('/partner', auth, async (req, res) => {
             });
           }
         });
-        
+
         const partnerIds = Array.from(partnerInfoMap.keys()).map(id => new mongoose.Types.ObjectId(id));
-        
+
         for (const request of expiredCooldowns) {
           // Find next available partner (not the current assigned one)
           const currentAssignedId = request.assignedPartnerId?.toString() || request.assignedPartnerId;
@@ -274,21 +274,21 @@ router.get('/partner', auth, async (req, res) => {
               return pidStr !== currentAssignedId;
             }
           );
-          
+
           if (otherPartners.length > 0) {
             // Check which partners are not in cooldown
             const requestsInCooldown = await ShopRequest.find({
               assignedPartnerId: { $in: otherPartners },
               cooldownUntil: { $gt: now }
             }).distinct('assignedPartnerId');
-            
+
             const availablePartners = otherPartners.filter(
               pid => !requestsInCooldown.some(cpid => cpid.toString() === pid.toString())
             );
-            
+
             let selectedPartnerId = null;
             let selectedPartnerCode = null;
-            
+
             if (availablePartners.length > 0) {
               const randomIndex = Math.floor(Math.random() * availablePartners.length);
               selectedPartnerId = availablePartners[randomIndex];
@@ -298,7 +298,7 @@ router.get('/partner', auth, async (req, res) => {
                 assignedPartnerId: { $in: otherPartners },
                 cooldownUntil: { $gt: now }
               }).sort({ cooldownUntil: 1 }).select('assignedPartnerId');
-              
+
               if (oldestCooldown) {
                 selectedPartnerId = oldestCooldown.assignedPartnerId;
               } else {
@@ -307,17 +307,17 @@ router.get('/partner', auth, async (req, res) => {
                 selectedPartnerId = otherPartners[randomIndex];
               }
             }
-            
+
             // Get partnerCode for selected partner
             const selectedPartnerInfo = partnerInfoMap.get(selectedPartnerId.toString());
             selectedPartnerCode = selectedPartnerInfo?.partnerCode || null;
-            
+
             request.assignedPartnerId = selectedPartnerId;
             request.assignedPartnerCode = selectedPartnerCode; // Store partnerCode
             request.assignedAt = new Date();
             request.cooldownUntil = new Date(Date.now() + 4 * 60 * 60 * 1000);
             await request.save();
-            
+
             console.log(`✅ Reassigned expired cooldown request ${request._id} to partner ${selectedPartnerId} (partnerCode: ${selectedPartnerCode || 'N/A'})`);
           }
         }
@@ -325,21 +325,21 @@ router.get('/partner', auth, async (req, res) => {
     }
 
     const partnerUserId = new mongoose.Types.ObjectId(req.user.id);
-    
+
     console.log(`🔍 DEBUG: Looking up current partner info...`);
     console.log(`  - User ID: ${req.user.id}`);
     console.log(`  - User partnerCode from JWT: ${req.user.partnerCode || 'N/A'}`);
-    
+
     const currentPartner = await Partner.findOne({ userId: req.user.id }).select('partnerCode userId');
     const currentPartnerCode = currentPartner?.partnerCode || null;
-    
+
     console.log(`🔍 DEBUG: Partner lookup result:`, {
       found: !!currentPartner,
       partnerCode: currentPartnerCode || 'N/A',
       partnerUserId: currentPartner?.userId ? currentPartner.userId.toString() : 'N/A',
       userPartnerCode: req.user.partnerCode || 'N/A'
     });
-    
+
     console.log(`🔍 Building query for partner:`, {
       partnerUserId_string: req.user.id,
       partnerUserId_objectId: partnerUserId.toString(),
@@ -348,29 +348,29 @@ router.get('/partner', auth, async (req, res) => {
       partnerProvince: partnerProvince,
       status: status || 'all'
     });
-    
+
     // NEW LOGIC: Partner sees ALL requests in same province (not just assigned ones)
     // But filter out requests where shop is already registered/submitted/approved
     // When partner registers shop, status becomes 'submitted' and shopId is set
     // When admin approves shop, status becomes 'registered' and shop is 'active'
     const Shop = require('../models/Shop');
-    
+
     // Build query: Show all requests in same province, but exclude:
     // 1. 'submitted' and 'registered' status (partner registered shop / admin approved)
     // 2. Requests that have shopId (means shop was registered, even if not approved yet)
     // 3. Requests where shopId matches an approved (active) shop
-    
+
     // Status filter: Only show 'pending' and 'contacted'
     // Exclude 'submitted' (partner registered shop) and 'registered' (admin approved)
-    const statusFilter = status 
+    const statusFilter = status
       ? (status === 'pending' || status === 'contacted' ? status : { $in: [] }) // Don't show 'submitted' or 'registered'
       : { $in: ['pending', 'contacted'] }; // Default: only pending and contacted
-    
+
     // Build query: Show all requests in same province, but exclude:
     // 1. Requests with status 'submitted' or 'registered' (shop was registered/admin approved)
     // 2. Requests that have shopId (means shop was registered by ANY partner)
     //    This ensures that when ANY partner registers shop, the request disappears from ALL partners immediately
-    
+
     // IMPORTANT: Filter out 'submitted' and 'registered' status explicitly
     // Also filter out any request that has shopId (regardless of status)
     const queryConditions = [
@@ -386,7 +386,7 @@ router.get('/partner', auth, async (req, res) => {
         ]
       }
     ];
-    
+
     // If specific status is requested, override the status filter (but still exclude 'submitted'/'registered')
     if (status) {
       if (status === 'pending' || status === 'contacted') {
@@ -400,7 +400,7 @@ router.get('/partner', auth, async (req, res) => {
         queryConditions.push({ status: { $in: [] } });
       }
     }
-    
+
     const query = {
       $and: queryConditions
     };
@@ -412,12 +412,12 @@ router.get('/partner', auth, async (req, res) => {
       }
       return value;
     }));
-    
+
     // Extract query details for logging
     const provinceCondition = query.$and?.find(c => c.province);
     const statusCondition = query.$and?.find(c => c.status);
     const shopIdCondition = query.$and?.find(c => c.$or);
-    
+
     console.log(`🔍 DEBUG: Final query for partner ${req.user.id} (${req.user.name}):`, JSON.stringify(queryForLog, null, 2));
     console.log(`🔍 DEBUG: Query details:`, {
       province: provinceCondition?.province || 'N/A',
@@ -435,7 +435,7 @@ router.get('/partner', auth, async (req, res) => {
     const allProvinceRequests = await ShopRequest.find({ province: partnerProvince })
       .select('_id name status assignedPartnerId assignedPartnerCode assignedAt shopId')
       .lean();
-    
+
     console.log(`📊 DEBUG: All requests in province ${partnerProvince}:`, allProvinceRequests.map(r => ({
       id: r._id,
       name: r.name,
@@ -451,42 +451,42 @@ router.get('/partner', auth, async (req, res) => {
 
     // Auto-reassign requests that are assigned to wrong partner but in same province
     const partnerUserIdStr = req.user.id.toString();
-    
+
     // Use currentPartnerCode from above (already declared at line 357)
-    
+
     // Find requests in this province that are assigned to a partner not in this province
     const allPartnersInProvince = await Partner.find({
       'workingArea.province': partnerProvince,
       status: 'approved'
     }).select('userId partnerCode');
-    
+
     const validPartnerIds = allPartnersInProvince.map(p => {
       const userId = p.userId?._id || p.userId;
       return userId ? userId.toString() : null;
     }).filter(id => id !== null);
-    
+
     console.log(`🔍 Valid partner IDs in province ${partnerProvince}:`, validPartnerIds);
     console.log(`🔍 Current partner code: ${currentPartnerCode || 'N/A'}`);
-    
+
     // Find requests assigned to OTHER partners (not this partner)
     // Use assignedPartnerCode if available, otherwise fallback to assignedPartnerId
     console.log(`🔍 DEBUG: Looking for requests assigned to other partners...`);
     console.log(`  - Current partnerCode: ${currentPartnerCode || 'N/A'}`);
     console.log(`  - Current partnerId: ${partnerUserIdStr}`);
-    
+
     const wrongAssignedRequests = await ShopRequest.find({
       province: partnerProvince,
       status: 'pending',
       $or: [
         // If we have partnerCode, check by partnerCode first
         ...(currentPartnerCode ? [
-          { 
-            assignedPartnerCode: { $ne: null, $ne: currentPartnerCode } 
+          {
+            assignedPartnerCode: { $ne: null, $ne: currentPartnerCode }
           }
         ] : []),
         // Also check by userId (for backward compatibility)
-        { 
-          assignedPartnerId: { 
+        {
+          assignedPartnerId: {
             $ne: null,
             $ne: partnerUserId
           }
@@ -511,29 +511,29 @@ router.get('/partner', auth, async (req, res) => {
       const requestsToReassign = wrongAssignedRequests.filter(req => {
         const assignedCode = req.assignedPartnerCode;
         const isAssignedToMe = assignedCode === currentPartnerCode;
-        
+
         console.log(`  🔍 Checking request ${req._id}:`, {
           assignedCode: assignedCode || 'null',
           currentCode: currentPartnerCode,
           isAssignedToMe: isAssignedToMe,
           shouldReassign: !isAssignedToMe
         });
-        
+
         return !isAssignedToMe;
       });
-      
+
       console.log(`🔧 Found ${requestsToReassign.length} requests to reassign (out of ${wrongAssignedRequests.length} total)`);
-      
+
       if (requestsToReassign.length > 0) {
         console.log(`🔧 Reassigning ${requestsToReassign.length} requests to current partner ${partnerUserIdStr} (partnerCode: ${currentPartnerCode})...`);
-        
+
         for (const request of requestsToReassign) {
           const currentAssignedId = request.assignedPartnerId?.toString() || request.assignedPartnerId;
           const currentAssignedCode = request.assignedPartnerCode || 'N/A';
-          
+
           // Check if the currently assigned partner is valid in this province
           const isCurrentPartnerValid = validPartnerIds.includes(currentAssignedId);
-          
+
           console.log(`  🔄 Reassigning request ${request._id}:`, {
             from: {
               partnerId: currentAssignedId,
@@ -545,14 +545,14 @@ router.get('/partner', auth, async (req, res) => {
               partnerCode: currentPartnerCode
             }
           });
-          
+
           // Reassign to current partner
           request.assignedPartnerId = partnerUserId;
           request.assignedPartnerCode = currentPartnerCode; // Store partnerCode
           request.assignedAt = new Date();
           request.cooldownUntil = new Date(Date.now() + 4 * 60 * 60 * 1000);
           await request.save();
-          
+
           console.log(`✅ Auto-reassigned request ${request._id} from partner ${currentAssignedId} (${currentAssignedCode}) to ${partnerUserIdStr} (${currentPartnerCode})`);
         }
       } else {
@@ -561,25 +561,25 @@ router.get('/partner', auth, async (req, res) => {
     } else if (wrongAssignedRequests.length > 0 && !currentPartnerCode) {
       // Fallback: if no partnerCode, use old logic with userId
       console.log(`⚠️ No partnerCode available, using userId-based reassignment (legacy mode)`);
-      
+
       for (const request of wrongAssignedRequests) {
         const currentAssignedId = request.assignedPartnerId?.toString() || request.assignedPartnerId;
-        
+
         // Reassign to current partner
         request.assignedPartnerId = partnerUserId;
         request.assignedAt = new Date();
         request.cooldownUntil = new Date(Date.now() + 4 * 60 * 60 * 1000);
         await request.save();
-        
+
         console.log(`✅ Auto-reassigned request ${request._id} from partner ${currentAssignedId} to ${partnerUserIdStr} (no partnerCode)`);
       }
     } else {
       console.log(`✅ No requests need reassignment`);
     }
-    
+
     // Execute query and log results for debugging
     console.log(`🔍 Executing query for partner ${req.user.id}:`, JSON.stringify(queryForLog, null, 2));
-    
+
     let shopRequests = await ShopRequest.find(query)
       .populate('userId', 'name email photo')
       .populate({
@@ -590,11 +590,11 @@ router.get('/partner', auth, async (req, res) => {
       .populate('partnerId', 'name email photo')
       .populate('shopId', 'shopName shopId status')
       .sort({ createdAt: -1 });
-    
+
     // Log filtered results
     console.log(`📊 Query returned ${shopRequests.length} requests (after filtering)`);
     console.log(`📊 Total requests in province before filtering: ${allProvinceRequests.length}`);
-    
+
     // Check which requests were filtered out
     const filteredOutRequests = allProvinceRequests.filter(r => {
       const hasShopId = !!r.shopId;
@@ -602,7 +602,7 @@ router.get('/partner', auth, async (req, res) => {
       const shouldBeFiltered = hasShopId || isSubmittedOrRegistered;
       return shouldBeFiltered;
     });
-    
+
     console.log(`📊 Filtered out ${filteredOutRequests.length} requests:`, filteredOutRequests.map(r => ({
       id: r._id,
       name: r.name,
@@ -610,7 +610,7 @@ router.get('/partner', auth, async (req, res) => {
       shopId: r.shopId ? r.shopId.toString() : 'null',
       reason: r.status === 'submitted' || r.status === 'registered' ? 'status' : 'hasShopId'
     })));
-    
+
     shopRequests.forEach((req, idx) => {
       const shopIdValue = req.shopId ? (req.shopId._id || req.shopId).toString() : 'null';
       console.log(`  ✅ Request ${idx + 1} (PASSED FILTER):`, {
@@ -622,16 +622,16 @@ router.get('/partner', auth, async (req, res) => {
         shouldBeVisible: !req.shopId && req.status !== 'submitted' && req.status !== 'registered'
       });
     });
-    
+
     // Update old requests that don't have assignedPartnerCode
     // This is a migration step for requests created before assignedPartnerCode was added
     console.log(`🔍 DEBUG: Checking ${shopRequests.length} requests for assignedPartnerCode...`);
-    
+
     const requestsNeedingUpdate = shopRequests.filter(req => {
       const hasAssignedPartner = req.assignedPartnerId;
       const assignedPartnerIdValue = hasAssignedPartner ? (hasAssignedPartner._id || hasAssignedPartner) : null;
       const hasCode = req.assignedPartnerCode;
-      
+
       console.log(`  📋 Request ${req._id}:`, {
         hasAssignedPartner: !!hasAssignedPartner,
         assignedPartnerIdValue: assignedPartnerIdValue ? assignedPartnerIdValue.toString() : 'null',
@@ -639,15 +639,15 @@ router.get('/partner', auth, async (req, res) => {
         assignedPartnerCode: hasCode || 'null',
         needsUpdate: assignedPartnerIdValue && !hasCode
       });
-      
+
       return assignedPartnerIdValue && !req.assignedPartnerCode;
     });
-    
+
     console.log(`🔍 DEBUG: Found ${requestsNeedingUpdate.length} requests needing update out of ${shopRequests.length} total`);
-    
+
     if (requestsNeedingUpdate.length > 0) {
       console.log(`🔧 Found ${requestsNeedingUpdate.length} requests without assignedPartnerCode, updating...`);
-      
+
       for (const req of requestsNeedingUpdate) {
         try {
           const assignedPartnerIdValue = req.assignedPartnerId ? (req.assignedPartnerId._id || req.assignedPartnerId) : null;
@@ -655,33 +655,33 @@ router.get('/partner', auth, async (req, res) => {
             console.log(`  ⚠️ Request ${req._id}: No assignedPartnerIdValue, skipping`);
             continue;
           }
-          
+
           console.log(`  🔍 Looking up partner for userId: ${assignedPartnerIdValue.toString()}`);
-          
+
           // Find partner by assignedPartnerId
-          const partner = await Partner.findOne({ 
-            userId: assignedPartnerIdValue 
+          const partner = await Partner.findOne({
+            userId: assignedPartnerIdValue
           }).select('partnerCode userId');
-          
+
           console.log(`  🔍 Partner lookup result:`, {
             found: !!partner,
             partnerCode: partner?.partnerCode || 'N/A',
             partnerUserId: partner?.userId ? partner.userId.toString() : 'N/A'
           });
-          
+
           if (partner && partner.partnerCode) {
             console.log(`  ✅ Updating request ${req._id} in database with assignedPartnerCode: ${partner.partnerCode}`);
-            
+
             // Update the request in database
             const updateResult = await ShopRequest.findByIdAndUpdate(req._id, {
               assignedPartnerCode: partner.partnerCode
             }, { new: true });
-            
+
             console.log(`  ✅ Database update result:`, {
               success: !!updateResult,
               updatedCode: updateResult?.assignedPartnerCode || 'N/A'
             });
-            
+
             // Update in memory for this response
             // Use set() to ensure Mongoose document includes the field
             if (req.set && typeof req.set === 'function') {
@@ -693,7 +693,7 @@ router.get('/partner', auth, async (req, res) => {
             }
             // Also set directly on the object
             req.assignedPartnerCode = partner.partnerCode;
-            
+
             // Verify the update
             const verifyCode = req.assignedPartnerCode || req.get?.('assignedPartnerCode') || null;
             console.log(`  ✅ Updated request ${req._id} with assignedPartnerCode: ${partner.partnerCode}`);
@@ -714,7 +714,7 @@ router.get('/partner', auth, async (req, res) => {
     } else {
       console.log(`✅ All ${shopRequests.length} requests already have assignedPartnerCode`);
     }
-    
+
     // Debug: Check if assignedPartnerId was populated
     console.log(`🔍 Checking populate results:`);
     shopRequests.forEach((req, idx) => {
@@ -736,11 +736,11 @@ router.get('/partner', auth, async (req, res) => {
       const assignedPartnerIdStr = assignedPartnerIdValue ? assignedPartnerIdValue.toString() : null;
       const myUserIdStr = req.user.id.toString();
       const isAssignedToMe = assignedPartnerIdStr === myUserIdStr;
-      
+
       const assignedPartnerCode = request.assignedPartnerCode || null;
       const myPartnerCode = req.user.partnerCode || null;
       const isAssignedToMeByCode = assignedPartnerCode && myPartnerCode && assignedPartnerCode === myPartnerCode;
-      
+
       console.log(`  📋 Request ${idx + 1} (${request.name || 'N/A'}):`, {
         requestId: request._id,
         status: request.status,
@@ -773,7 +773,7 @@ router.get('/partner', auth, async (req, res) => {
 
     // Convert Mongoose documents to plain objects to ensure proper serialization
     console.log(`🔍 DEBUG: Converting ${shopRequests.length} requests to response format...`);
-    
+
     const responseData = {
       success: true,
       data: shopRequests.map((req, idx) => {
@@ -785,16 +785,16 @@ router.get('/partner', auth, async (req, res) => {
           hasProperty: 'assignedPartnerCode' in req,
           assignedPartnerId: req.assignedPartnerId ? (req.assignedPartnerId._id || req.assignedPartnerId).toString() : 'null'
         });
-        
+
         const plainReq = req.toObject ? req.toObject() : req;
-        
+
         console.log(`     - After toObject():`, {
           assignedPartnerCode_after: plainReq.assignedPartnerCode || 'null',
           assignedPartnerCode_type: typeof plainReq.assignedPartnerCode,
           hasProperty: 'assignedPartnerCode' in plainReq,
           allKeys: Object.keys(plainReq).filter(k => k.includes('assigned') || k.includes('partner'))
         });
-        
+
         // Ensure assignedPartnerId is properly included
         if (plainReq.assignedPartnerId) {
           // If it's a populated object, keep it; if it's an ObjectId, convert to string
@@ -807,12 +807,12 @@ router.get('/partner', auth, async (req, res) => {
             console.log(`     - Converted assignedPartnerId to string: ${plainReq.assignedPartnerId}`);
           }
         }
-        
+
         // Ensure assignedPartnerCode is included
         // Check both plainReq (from toObject) and req (original document)
         if (!plainReq.assignedPartnerCode) {
           console.log(`     - assignedPartnerCode missing in plainReq, trying to get from req...`);
-          
+
           // Try to get from original document
           if (req.assignedPartnerCode) {
             plainReq.assignedPartnerCode = req.assignedPartnerCode;
@@ -832,28 +832,28 @@ router.get('/partner', auth, async (req, res) => {
         } else {
           console.log(`     - assignedPartnerCode already in plainReq: ${plainReq.assignedPartnerCode}`);
         }
-        
+
         // Explicitly ensure it's in the response (even if null/undefined)
         if (!('assignedPartnerCode' in plainReq)) {
           const fallbackCode = req.assignedPartnerCode || null;
           plainReq.assignedPartnerCode = fallbackCode;
           console.log(`     - Added assignedPartnerCode as fallback: ${fallbackCode}`);
         }
-        
+
         console.log(`     - Final result:`, {
           assignedPartnerCode: plainReq.assignedPartnerCode || 'null',
           hasProperty: 'assignedPartnerCode' in plainReq,
           assignedPartnerId: plainReq.assignedPartnerId || 'null'
         });
-        
+
         return plainReq;
       })
     };
-    
+
     console.log(`📤 DEBUG: Final response data structure:`);
     console.log(`  - Total requests: ${responseData.data.length}`);
     console.log(`  - Success: ${responseData.success}`);
-    
+
     responseData.data.forEach((req, idx) => {
       console.log(`  📋 Request ${idx + 1} (${req._id || 'N/A'}):`, {
         name: req.name || 'N/A',
@@ -867,7 +867,7 @@ router.get('/partner', auth, async (req, res) => {
         province: req.province || 'N/A'
       });
     });
-    
+
     console.log(`📤 Sending response to partner ${req.user.id} (${req.user.name}):`, {
       success: responseData.success,
       dataCount: responseData.data.length,
@@ -884,7 +884,7 @@ router.get('/partner', auth, async (req, res) => {
         allKeys: Object.keys(responseData.data[0]).slice(0, 10) // First 10 keys
       } : null
     });
-    
+
     res.json(responseData);
   } catch (error) {
     console.error('Error fetching shop requests:', error);
@@ -1105,7 +1105,7 @@ router.post('/:id/register-shop', auth, partnerAuth, async (req, res) => {
 
 /**
  * GET /api/shop-requests/admin
- * Get all shop requests (admin view)
+ * Get all shop requests (admin view). Optional ?status=pending|contacted|submitted|registered|rejected
  */
 router.get('/admin', auth, adminAuth, async (req, res) => {
   try {
@@ -1121,43 +1121,94 @@ router.get('/admin', auth, adminAuth, async (req, res) => {
         model: 'User'
       })
       .populate('shopId', 'shopName shopId status')
-      .sort({ createdAt: -1 });
-
-    // Filter out registered, rejected, and submitted requests where shop is already approved
-    const filteredRequests = shopRequests.filter(request => {
-      // Hide registered and rejected
-      if (request.status === 'registered' || request.status === 'rejected') {
-        return false;
-      }
-      // Hide submitted requests where shop is already approved
-      if (request.status === 'submitted' && request.shopId && request.shopId.status === 'active') {
-        return false;
-      }
-      return true;
-    });
-
-    // Debug log
-    console.log(`📋 Admin: Found ${shopRequests.length} shop requests, filtered to ${filteredRequests.length} active requests`);
-    filteredRequests.forEach((req, idx) => {
-      const assignedPartner = req.assignedPartnerId;
-      console.log(`Request ${idx + 1} (${req.name}):`, {
-        id: req._id,
-        status: req.status,
-        province: req.province,
-        hasAssignedPartner: !!assignedPartner,
-        assignedPartnerId: assignedPartner ? (assignedPartner._id || assignedPartner) : null,
-        assignedPartnerName: assignedPartner?.name || assignedPartner?.email || 'N/A',
-        assignedAt: req.assignedAt,
-        shopStatus: req.shopId?.status || 'N/A'
-      });
-    });
+      .sort({ createdAt: -1 })
+      .lean();
 
     res.json({
       success: true,
-      data: filteredRequests
+      data: shopRequests
     });
   } catch (error) {
     console.error('Error fetching shop requests:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/shop-requests/:id/assign
+ * Admin only: manually assign a shop request to a partner. Restarts cooldown (4h).
+ */
+router.put('/:id/assign', auth, adminAuth, async (req, res) => {
+  try {
+    const shopRequest = await ShopRequest.findById(req.params.id);
+    if (!shopRequest) {
+      return res.status(404).json({ success: false, message: 'Shop request not found' });
+    }
+
+    const { partnerId, partnerCode } = req.body;
+    if (!partnerId && !partnerCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provide partnerId or partnerCode'
+      });
+    }
+
+    const Partner = require('../models/Partner');
+    let partner = null;
+    if (partnerId) {
+      partner = await Partner.findOne({
+        userId: partnerId,
+        status: 'approved'
+      }).populate('userId', 'name email');
+    } else {
+      partner = await Partner.findOne({
+        partnerCode: partnerCode?.trim(),
+        status: 'approved'
+      }).populate('userId', 'name email');
+    }
+
+    if (!partner || !partner.userId) {
+      return res.status(404).json({
+        success: false,
+        message: 'Partner not found or not approved'
+      });
+    }
+
+    const partnerProvince = partner.workingArea?.province;
+    const normalizeProvince = (name) => {
+      if (!name || typeof name !== 'string') return '';
+      return String(name).replace(/จังหวัด/g, '').replace(/ฯ/g, '').trim();
+    };
+    if (!partnerProvince || normalizeProvince(shopRequest.province) !== normalizeProvince(partnerProvince)) {
+      return res.status(400).json({
+        success: false,
+        message: `Partner must be in the same province (${shopRequest.province})`
+      });
+    }
+
+    const newAssignedPartnerId = partner.userId._id || partner.userId;
+    const cooldownUntil = new Date(Date.now() + 4 * 60 * 60 * 1000); // 4 hours – restart countdown
+
+    shopRequest.assignedPartnerId = newAssignedPartnerId;
+    shopRequest.assignedPartnerCode = partner.partnerCode || null;
+    shopRequest.assignedAt = new Date();
+    shopRequest.cooldownUntil = cooldownUntil;
+    await shopRequest.save();
+
+    const updated = await ShopRequest.findById(shopRequest._id)
+      .populate('assignedPartnerId', 'name email')
+      .lean();
+
+    res.json({
+      success: true,
+      message: 'Shop request assigned; cooldown restarted (4h)',
+      data: updated
+    });
+  } catch (error) {
+    console.error('Error assigning shop request:', error);
     res.status(500).json({
       success: false,
       message: error.message
@@ -1172,7 +1223,7 @@ router.get('/admin', auth, adminAuth, async (req, res) => {
 router.put('/:id/reassign', auth, async (req, res) => {
   try {
     const shopRequest = await ShopRequest.findById(req.params.id);
-    
+
     if (!shopRequest) {
       return res.status(404).json({
         success: false,
@@ -1182,7 +1233,7 @@ router.put('/:id/reassign', auth, async (req, res) => {
 
     const isAdmin = req.user.userType === 'admin';
     const isPartner = req.user.partnerId;
-    
+
     // Admin can reassign to any partner, partner can only reassign to themselves
     if (!isAdmin && !isPartner) {
       return res.status(403).json({
@@ -1194,7 +1245,7 @@ router.put('/:id/reassign', auth, async (req, res) => {
     // Get partner's province from Partner model
     const Partner = require('../models/Partner');
     const partner = await Partner.findOne({ userId: req.user.id }).select('workingArea.province');
-    
+
     if (!partner || !partner.workingArea?.province) {
       return res.status(400).json({
         success: false,
@@ -1224,7 +1275,7 @@ router.put('/:id/reassign', auth, async (req, res) => {
     shopRequest.assignedPartnerCode = currentPartnerCode; // Store partnerCode
     shopRequest.assignedAt = new Date();
     shopRequest.cooldownUntil = cooldownUntil;
-    
+
     await shopRequest.save();
 
     console.log(`✅ Shop request ${req.params.id} reassigned to partner ${req.user.id} (${req.user.name})`);
@@ -1250,7 +1301,7 @@ router.put('/:id/reassign', auth, async (req, res) => {
 router.delete('/:id', auth, adminAuth, async (req, res) => {
   try {
     const shopRequest = await ShopRequest.findById(req.params.id);
-    
+
     if (!shopRequest) {
       return res.status(404).json({
         success: false,

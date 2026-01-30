@@ -88,7 +88,7 @@ exports.getShopStatistics = async (req, res) => {
 exports.getAllShops = async (req, res) => {
   try {
     console.log('🔍 Fetching shops for user type:', req.user.userType);
-    
+
     let shops;
     console.log(req.user)
     // const shops1 = await Shop.find({})
@@ -97,29 +97,31 @@ exports.getAllShops = async (req, res) => {
     if (req.user.userType === 'admin') {
       shops = await Shop.find({ isDeleted: { $ne: true } })
         .populate('ownerEmail', 'name email')
+        .populate('partnerId', 'name email')
         .sort({ createdAt: -1 });
-    } 
+    }
     // Shop owner can only see their own shop
     else if (req.user.userType === 'shop') {
-      shops = await Shop.find({ 
-        user: req.user._id, 
-        isDeleted: { $ne: true } 
+      shops = await Shop.find({
+        user: req.user._id,
+        isDeleted: { $ne: true }
       })
-      .populate('ownerEmail', 'name email')
+        .populate('ownerEmail', 'name email')
+        .populate('partnerId', 'name email')
         .sort({ createdAt: -1 });
-      
+
       console.log(shops)
-    } 
+    }
     // Other users not allowed
     else {
-      return res.status(403).json({ 
+      return res.status(403).json({
         success: false,
-        message: 'Access denied. Shop owners and admins only.' 
+        message: 'Access denied. Shop owners and admins only.'
       });
     }
 
     console.log(`✅ Found ${shops.length} shops for ${req.user.userType}`);
-    
+
     res.json({
       success: true,
       data: shops,
@@ -128,10 +130,10 @@ exports.getAllShops = async (req, res) => {
 
   } catch (error) {
     console.error('❌ Get shops error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      message: 'Server error fetching shops', 
-      error: error.message 
+      message: 'Server error fetching shops',
+      error: error.message
     });
   }
 };

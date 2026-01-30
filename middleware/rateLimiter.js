@@ -11,7 +11,7 @@ const isDevelopment = process.env.NODE_ENV === 'development';
 const hasAuthToken = (req) => {
   const authHeader = req.headers.authorization || req.headers['x-auth-token'];
   if (!authHeader) return false;
-  
+
   // Check if it's a Bearer token or custom token format
   if (typeof authHeader === 'string') {
     // Bearer token format
@@ -21,7 +21,7 @@ const hasAuthToken = (req) => {
     // JWT-like tokens (long strings)
     if (authHeader.length > 50) return true;
   }
-  
+
   return false;
 };
 
@@ -39,14 +39,7 @@ const apiLimiter = rateLimit({
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
   // Skip rate limiting for authenticated users (they get higher limit via authenticatedLimiter)
-  skip: (req) => {
-    // Skip if request has auth token (authenticated users use authenticatedLimiter)
-    const hasToken = hasAuthToken(req);
-    if (hasToken) {
-      console.log('🔓 Rate limiter: Skipping apiLimiter for authenticated request');
-    }
-    return hasToken;
-  },
+  skip: (req) => hasAuthToken(req),
 });
 
 // Authenticated user rate limiter (higher limit for logged-in users)
@@ -64,12 +57,7 @@ const authenticatedLimiter = rateLimit({
   legacyHeaders: false,
   // Only apply to authenticated users
   skip: (req) => {
-    // Skip if not authenticated (let apiLimiter handle it)
     const hasToken = hasAuthToken(req);
-    const isAuthenticated = hasToken && req.user;
-    if (!isAuthenticated && hasToken) {
-      console.log('⚠️ Rate limiter: Request has token but req.user not set yet (auth middleware not run)');
-    }
     return !hasToken || !req.user;
   },
 });

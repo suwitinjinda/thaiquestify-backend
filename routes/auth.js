@@ -14,6 +14,114 @@ const axios = require('axios');
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
+const googleExchangeRedirectUri = 'https://thaiquestify.com/auth/google/callback';
+const adminExchangeStore = require('../lib/adminGoogleExchangeStore');
+
+/**
+ * Exchange Google auth code for tokens and user. Used by mobile (with code_verifier) and admin web (server-side, no code_verifier).
+ * @param {string} code - Authorization code from Google
+ * @param {string|null} codeVerifier - PKCE code_verifier (null for server-side admin flow)
+ * @returns {Promise<{ token: string, user: object }>}
+ */
+async function exchangeGoogleCodeForUser(code, codeVerifier) {
+  const exchangeParams = {
+    code,
+    client_id: GOOGLE_CLIENT_ID,
+    client_secret: GOOGLE_CLIENT_SECRET,
+    redirect_uri: googleExchangeRedirectUri,
+    grant_type: 'authorization_code',
+  };
+  if (codeVerifier) exchangeParams.code_verifier = codeVerifier;
+
+  const body = new URLSearchParams(exchangeParams).toString();
+  const tokenResponse = await axios.post(
+    'https://oauth2.googleapis.com/token',
+    body,
+    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+  );
+  const tokens = tokenResponse.data;
+
+  let payload;
+  try {
+    const client = new OAuth2Client(GOOGLE_CLIENT_ID);
+    const ticket = await client.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: GOOGLE_CLIENT_ID
+    });
+    payload = ticket.getPayload();
+  } catch (verifyError) {
+    try {
+      const decoded = jwt.decode(tokens.id_token, { complete: true });
+      if (decoded?.payload) payload = decoded.payload;
+      else throw new Error('Failed to decode JWT');
+    } catch (decodeError) {
+      throw new Error('Failed to verify Google ID token');
+    }
+  }
+
+  let user = await User.findOne({
+    $or: [{ email: payload.email.toLowerCase() }, { googleId: payload.sub }]
+  });
+
+  if (!user) {
+    user = new User({
+      email: payload.email.toLowerCase(),
+      name: payload.name || payload.email.split('@')[0],
+      googleId: payload.sub,
+      photo: payload.picture || '',
+      isEmailVerified: true,
+      signupMethod: 'google',
+      userType: 'customer',
+      phone: '',
+      partnerCode: null,
+      isActive: true,
+      lastLogin: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+    await user.save();
+  } else {
+    if (!user.googleId) user.googleId = payload.sub;
+    if (payload.picture && !user.photo) user.photo = payload.picture;
+    if (payload.name && payload.name !== user.name) user.name = payload.name;
+    user.signupMethod = 'google';
+    user.isEmailVerified = true;
+    user.lastLogin = new Date();
+    user.updatedAt = new Date();
+    await user.save({ validateBeforeSave: true });
+  }
+
+  const token = jwt.sign(
+    {
+      userId: user._id.toString(),
+      email: user.email,
+      userType: user.userType,
+      googleId: user.googleId
+    },
+    process.env.JWT_SECRET || 'fallback-secret',
+    { expiresIn: '24h' }
+  );
+
+  const userResponse = {
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    googleId: user.googleId,
+    signupMethod: user.signupMethod,
+    userType: user.userType,
+    photo: user.photo,
+    phone: user.phone || '',
+    isEmailVerified: user.isEmailVerified,
+    createdAt: user.createdAt,
+    lastLogin: user.lastLogin,
+    isActive: user.isActive,
+    partnerCode: user.partnerCode || null,
+    partnerId: user.partnerId || null,
+    updatedAt: user.updatedAt
+  };
+
+  return { token, user: userResponse };
+}
 
 // Google OAuth Login
 router.post('/google', async (req, res) => {
@@ -127,273 +235,48 @@ router.post('/google', async (req, res) => {
 });
 
 router.post('/google/exchange', async (req, res) => {
-  // 1. รับค่าจาก Frontend (req.body)
   const { code, code_verifier } = req.body;
-
-  // ตรวจสอบค่าที่จำเป็น
   if (!code || !code_verifier) {
     return res.status(400).json({ success: false, message: 'Missing code or code_verifier.' });
   }
-
-  // 2. กำหนดค่า Credentials และ URI
-  const client_id = process.env.GOOGLE_CLIENT_ID;
-  const client_secret = process.env.GOOGLE_CLIENT_SECRET;
-
-  // ⚠️ CRITICAL: URI นี้ต้องตรงกับที่ลงทะเบียนใน Google Cloud Console
-  const googleExchangeRedirectUri = 'https://thaiquestify.com/auth/google/callback';
-
-  // 3. เตรียม Parameters สำหรับ Google API
-  const exchangeParams = {
-    code: code,
-    client_id: client_id,
-    client_secret: client_secret,
-    redirect_uri: googleExchangeRedirectUri,
-    code_verifier: code_verifier,
-    grant_type: 'authorization_code',
-  };
-
   try {
-    // 4. แปลง Object ให้เป็น URL-encoded String
-    // FIX: แก้ปัญหา "unsupported_grant_type" โดยการส่งข้อมูลเป็น x-www-form-urlencoded
-    const body = new URLSearchParams(exchangeParams).toString();
-
-    // 5. แลก Tokens กับ Google API
-    const tokenResponse = await axios.post(
-      'https://oauth2.googleapis.com/token',
-      body, // ส่ง String ที่ URL-encoded แล้ว
-      {
-        headers: {
-          // 🛑 CRITICAL FIX: ระบุ Content-Type ที่ Google API ต้องการ
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
-    );
-    const tokens = tokenResponse.data;
-    console.log('✅ Tokens received from Google');
-
-    // 2. Verify ID token
-    // Try to verify with OAuth2Client, but handle errors gracefully
-    let payload;
-    
+    const { token, user: userResponse } = await exchangeGoogleCodeForUser(code, code_verifier);
     try {
-      // Create OAuth2Client instance (reuse if possible, but create new to avoid issues)
-      const client = new OAuth2Client(GOOGLE_CLIENT_ID);
-      
-      // Verify ID token
-      const ticket = await client.verifyIdToken({
-        idToken: tokens.id_token,
-        audience: GOOGLE_CLIENT_ID
-      });
-      
-      payload = ticket.getPayload();
-    } catch (verifyError) {
-      console.error('❌ Error verifying Google ID token with OAuth2Client:', verifyError.message);
-      console.error('   Error type:', verifyError.constructor.name);
-      console.error('   Stack:', verifyError.stack?.substring(0, 500));
-      
-      // Fallback: Try to decode JWT manually (less secure but works if verification fails)
-      // This is a workaround for the gaxios listener error
-      try {
-        console.log('⚠️ Attempting manual JWT decode as fallback...');
-        const jwt = require('jsonwebtoken');
-        // Decode without verification (less secure, but works)
-        const decoded = jwt.decode(tokens.id_token, { complete: true });
-        
-        if (decoded && decoded.payload) {
-          payload = decoded.payload;
-          console.log('✅ Successfully decoded JWT manually');
-          console.log('⚠️ WARNING: Token was decoded without verification - less secure!');
-        } else {
-          throw new Error('Failed to decode JWT token');
-        }
-      } catch (decodeError) {
-        console.error('❌ Also failed to decode JWT manually:', decodeError.message);
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to verify Google ID token',
-          error: 'Token verification failed. Please try again.'
-        });
-      }
-    }
-    console.log('👤 Google payload received:', {
-      email: payload.email,
-      name: payload.name,
-      googleId: payload.sub,
-      picture: payload.picture
-    });
-
-    // 3. 🔥 สำคัญ: หา User จาก Database
-    console.log('🔍 Searching user in database...');
-
-    // หาด้วย email หรือ googleId
-    let user = await User.findOne({
-      $or: [
-        { email: payload.email.toLowerCase() },
-        { googleId: payload.sub }
-      ]
-    });
-
-    console.log('📊 Database query result:', user ? 'Found' : 'Not found');
-
-    let isNewUser = false;
-
-    if (!user) {
-      // 3.1 ถ้าไม่พบ user ใน database -> สร้างใหม่
-      console.log('🆕 Creating new user...');
-
-      user = new User({
-        email: payload.email.toLowerCase(),
-        name: payload.name || payload.email.split('@')[0],
-        googleId: payload.sub,
-        photo: payload.picture || '',
-        isEmailVerified: true,
-        signupMethod: 'google',
-        userType: 'customer',
-        phone: '',
-        partnerCode: null,
-        isActive: true,
-        lastLogin: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      });
-
-      await user.save();
-      console.log('✅ New user created with ID:', user._id);
-      isNewUser = true;
-
-    } else {
-      // 3.2 ถ้าพบ user มีอยู่แล้ว -> อัพเดทข้อมูล
-      console.log('🔄 Updating existing user:', user.email);
-
-      // อัพเดทข้อมูล Google ถ้ายังไม่มี
-      if (!user.googleId) {
-        user.googleId = payload.sub;
-        console.log('➕ Added googleId to existing user');
-      }
-
-      // อัพเดทรูปโปรไฟล์ถ้ายังไม่มี
-      if (payload.picture && !user.photo) {
-        user.photo = payload.picture;
-      }
-
-      // อัพเดทชื่อถ้าต่างกัน
-      if (payload.name && payload.name !== user.name) {
-        user.name = payload.name;
-      }
-
-      // แน่ใจว่า signupMethod ถูกต้อง
-      user.signupMethod = 'google';
-      user.isEmailVerified = true;
-
-      // อัพเดท lastLogin
-      user.lastLogin = new Date();
-      user.updatedAt = new Date();
-
-      // Fix: Ensure integrations.facebook.accountType is valid or null
-      // If user has Facebook integration but accountType is invalid, set to null
-      if (user.integrations?.facebook) {
-        const accountType = user.integrations.facebook.accountType;
-        if (accountType !== null && accountType !== undefined &&
-          !['user', 'page', 'unknown'].includes(accountType)) {
-          // If invalid value, set to null
-          user.integrations.facebook.accountType = null;
-        }
-      }
-
-      // Use validateBeforeSave: false to skip validation for this update
-      // Or mark the field as modified to allow null
-      await user.save({ validateBeforeSave: true });
-      console.log('✅ User updated successfully');
-    }
-
-    // Log login activity
-    try {
-      await logLogin(req, user, 'google_exchange');
-      logger.activity('user_login', {
-        userId: user._id,
-        category: 'auth',
-        metadata: { method: 'google_exchange', email: user.email }
-      });
+      const userDoc = await User.findById(userResponse._id);
+      if (userDoc) await logLogin(req, userDoc, 'google_exchange');
     } catch (logError) {
       console.error('Failed to log login activity:', logError.message);
     }
-
-    // 4. 🔥 สร้าง JWT Token
-    const token = jwt.sign(
-      {
-        userId: user._id.toString(),
-        email: user.email,
-        userType: user.userType,
-        googleId: user.googleId
-      },
-      process.env.JWT_SECRET || 'fallback-secret',
-      { expiresIn: '24h' }
-    );
-
-    // 5. 🔥 ส่งข้อมูล User ที่ครบถ้วนกลับไป
-    const userResponse = {
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      googleId: user.googleId, // ⚠️ สำคัญ!
-      signupMethod: user.signupMethod, // ⚠️ สำคัญ!
-      userType: user.userType, // ⚠️ สำคัญ!
-      photo: user.photo,
-      phone: user.phone || '',
-      isEmailVerified: user.isEmailVerified, // ⚠️ สำคัญ!
-      createdAt: user.createdAt, // ⚠️ สำคัญ!
-      lastLogin: user.lastLogin, // ⚠️ สำคัญ!
-      isActive: user.isActive,
-      partnerCode: user.partnerCode || null,
-      partnerId: user.partnerId || null,
-      updatedAt: user.updatedAt
-    };
-
-    console.log('📤 Sending complete user data:', {
-      hasGoogleId: !!userResponse.googleId,
-      hasSignupMethod: !!userResponse.signupMethod,
-      hasUserType: !!userResponse.userType,
-      isNewUser: isNewUser
-    });
-
     res.json({
       success: true,
-      message: isNewUser ? 'สร้างบัญชีใหม่สำเร็จ' : 'เข้าสู่ระบบสำเร็จ',
-      token: token,
+      message: 'เข้าสู่ระบบสำเร็จ',
+      token,
       user: userResponse
     });
-
   } catch (error) {
-    // จัดการ Error ทุกรูปแบบ (Network, Google API 400, DB Error)
-    console.error('❌ FATAL Backend Error:', {
-      message: error.message,
-      stack: error.stack,
-      response: error.response ? {
-        status: error.response.status,
-        statusText: error.response.statusText,
-        data: error.response.data
-      } : null
-    });
-
-    let errorMessage = 'Internal server error during authentication process.';
-
-    if (error.response) {
-      // 💡 Google API Error (เช่น Code หมดอายุ, Verifier ผิด)
-      console.error('GOOGLE API RESPONSE STATUS:', error.response.status);
-      console.error('GOOGLE API RESPONSE DATA:', error.response.data);
-
-      if (error.response.data && error.response.data.error === 'invalid_grant') {
-        errorMessage = 'Invalid login code. Please try logging in again.';
-      }
-    }
-
-    // 9. ส่ง Response ล้มเหลวกลับไป Frontend
+    console.error('❌ Google exchange error:', error.message);
+    const errorMessage = error.response?.data?.error === 'invalid_grant'
+      ? 'Invalid login code. Please try logging in again.'
+      : (error.message || 'Internal server error during authentication process.');
     return res.status(500).json({
       success: false,
       message: errorMessage,
       error: error.message
     });
   }
+});
+
+/** Admin web: redeem one-time exchange code for token + user (no client storage needed). */
+router.get('/google/admin-callback', (req, res) => {
+  const exchange = req.query.exchange;
+  if (!exchange) {
+    return res.status(400).json({ success: false, message: 'Missing exchange code.' });
+  }
+  const data = adminExchangeStore.get(exchange);
+  if (!data) {
+    return res.status(400).json({ success: false, message: 'Exchange code expired or invalid. Please sign in with Google again.' });
+  }
+  res.json({ success: true, token: data.token, user: data.user });
 });
 
 router.get('/check-google-creds', (req, res) => {
@@ -911,9 +794,6 @@ router.post('/facebook/exchange', async (req, res) => {
 router.post('/facebook', async (req, res) => {
   const { token } = req.body;
 
-  console.log('\n=== FACEBOOK LOGIN START ===');
-  console.log('Token received:', token ? 'YES' : 'NO');
-
   if (!token) {
     return res.status(400).json({
       success: false,
@@ -931,7 +811,6 @@ router.post('/facebook', async (req, res) => {
     });
 
     const profile = me.data;
-    console.log('✅ ได้ข้อมูลผู้ใช้จาก Facebook:', profile.name, profile.email || 'No email');
 
     // หาหรือสร้างผู้ใช้ใน DB
     let user = await User.findOne({ facebookId: profile.id });
@@ -1081,7 +960,7 @@ router.get('/me', auth, async (req, res) => {
       .lean();
 
     const user = await Promise.race([userPromise, timeoutPromise]);
-    
+
     // Clear timeout if query completed successfully
     if (timeoutId) {
       clearTimeout(timeoutId);
@@ -1150,10 +1029,10 @@ router.get('/me', auth, async (req, res) => {
       clearTimeout(timeoutId);
       timeoutId = null;
     }
-    
+
     console.error('❌ Error fetching user profile:', error);
     console.error('Error stack:', error.stack);
-    
+
     // Handle timeout specifically
     if (error.message === 'Request timeout') {
       return res.status(504).json({
@@ -1162,7 +1041,7 @@ router.get('/me', auth, async (req, res) => {
         error: 'TIMEOUT'
       });
     }
-    
+
     res.status(500).json({
       success: false,
       message: 'Error fetching user profile',
@@ -1283,12 +1162,12 @@ router.put('/me', auth, async (req, res) => {
 router.post('/kyc/submit', auth, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { 
-      nationalId, 
-      bankAccount, 
-      idCardImageUrl, 
-      bankBookImageUrl, 
-      facePhotoUrl 
+    const {
+      nationalId,
+      bankAccount,
+      idCardImageUrl,
+      bankBookImageUrl,
+      facePhotoUrl
     } = req.body;
 
     // Validate required fields
@@ -1404,3 +1283,4 @@ router.post('/kyc/submit', auth, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.exchangeGoogleCodeForUser = exchangeGoogleCodeForUser;

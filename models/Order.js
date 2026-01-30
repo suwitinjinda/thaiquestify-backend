@@ -77,6 +77,18 @@ const orderSchema = new mongoose.Schema({
     ref: 'Coupon',
     default: null,
   },
+  /** แคมเปญที่ลูกค้าเลือกใช้ตอนสั่ง (ยอดอาหาร = 0) */
+  appliedCampaign: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Campaign',
+    default: null,
+  },
+  /** ส่วนลดจากแคมเปญ (บาท) – เมื่อใช้แคมเปญ = subtotal เพื่อให้ยอดอาหารเป็น 0 */
+  campaignDiscountAmount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
   total: {
     type: Number,
     required: true,
@@ -159,6 +171,12 @@ const orderSchema = new mongoose.Schema({
     default: 0,
     min: 0,
   },
+  /** แคมเปญที่ใช้กับคำสั่งซื้อนี้ (เมื่อออเดอร์ completed ระบบจะบันทึกว่าทำครบแคมเปญไหน) */
+  campaignsApplied: [{
+    campaign: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign' },
+    campaignParticipation: { type: mongoose.Schema.Types.ObjectId, ref: 'CampaignParticipation' },
+    pointsAwarded: { type: Number, default: 0 },
+  }],
 }, {
   timestamps: true,
 });

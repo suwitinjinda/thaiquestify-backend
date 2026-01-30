@@ -22,7 +22,7 @@ const ShopFeeSplitRecord = require('../models/ShopFeeSplitRecord');
  */
 router.post('/', auth, async (req, res) => {
   try {
-    const { shopId, items, deliveryAddress, phone, notes, paymentMethod, orderType, couponCode } = req.body;
+    const { shopId, items, deliveryAddress, phone, notes, paymentMethod, orderType, couponCode, campaignId } = req.body;
     const userId = req.user.id || req.user._id;
 
     // Validate required fields
@@ -54,7 +54,7 @@ router.post('/', auth, async (req, res) => {
 
     for (const item of items) {
       const menuItem = await FoodMenuItem.findById(item.menuItemId || item._id);
-      
+
       if (!menuItem) {
         return res.status(400).json({
           success: false,
@@ -93,16 +93,16 @@ router.post('/', auth, async (req, res) => {
 
     // Determine order type (default to 'dine_in' if not provided)
     const finalOrderType = orderType || 'dine_in';
-    
+
     // Calculate delivery fee based on order type
     let deliveryFee = 0;
     let distance = 0;
-    
+
     if (finalOrderType === 'delivery') {
       // For delivery, calculate fee based on distance from shop to customer
       // Get user's coordinates (if available) - can use coordinates even if address is empty
       const user = await User.findById(userId);
-      
+
       // Validate delivery address - but allow using coordinates if address is empty
       if (!deliveryAddress || deliveryAddress.trim() === '') {
         // If no address but has coordinates, use coordinates
@@ -138,13 +138,62 @@ router.post('/', auth, async (req, res) => {
 
     // Service fee has been removed
 
-    // Validate and apply coupon if provided
+    // Validate and apply campaign (food = 0) or coupon
     let coupon = null;
     let discountAmount = 0;
+    let appliedCampaign = null;
+    let campaignDiscountAmount = 0;
     const Coupon = require('../models/Coupon');
+    const Campaign = require('../models/Campaign');
+    const CampaignParticipation = require('../models/CampaignParticipation');
 
-    // 1 คูปองต่อ user ต่อร้าน ต่อวัน (reset หลังเที่ยงคืน)
-    if (couponCode) {
+    if (campaignId) {
+      try {
+        const campaign = await Campaign.findById(campaignId).lean();
+        if (!campaign) {
+          return res.status(400).json({ success: false, message: 'ไม่พบแคมเปญ' });
+        }
+        if (campaign.status !== 'active') {
+          return res.status(400).json({ success: false, message: 'แคมเปญนี้ยังไม่เปิดหรือปิดแล้ว' });
+        }
+        const shopObjId = campaign.shop?._id ? campaign.shop._id.toString() : campaign.shop?.toString();
+        if (shopObjId !== shop._id.toString()) {
+          return res.status(400).json({ success: false, message: 'แคมเปญไม่ตรงกับร้านนี้' });
+        }
+        const now = new Date();
+        if (campaign.startDate && new Date(campaign.startDate) > now) {
+          return res.status(400).json({ success: false, message: 'แคมเปญยังไม่เริ่ม' });
+        }
+        if (campaign.endDate && new Date(campaign.endDate) < now) {
+          return res.status(400).json({ success: false, message: 'แคมเปญหมดอายุแล้ว' });
+        }
+        const maxOrderBaht = Number(campaign.maxOrderBaht) || 0;
+        if (maxOrderBaht > 0 && subtotal > maxOrderBaht) {
+          return res.status(400).json({
+            success: false,
+            message: `แคมเปญนี้ใช้ได้เมื่อยอดสั่งไม่เกิน ${maxOrderBaht} บาท (ยอดปัจจุบัน: ${subtotal.toFixed(0)} บาท)`,
+          });
+        }
+        const participation = await CampaignParticipation.findOne({
+          campaign: campaignId,
+          user: userId,
+        }).lean();
+        if (!participation) {
+          return res.status(400).json({ success: false, message: 'กรุณาเข้าร่วมแคมเปญก่อนใช้' });
+        }
+        appliedCampaign = campaignId;
+        campaignDiscountAmount = subtotal;
+      } catch (campaignErr) {
+        console.error('Campaign apply error:', campaignErr);
+        return res.status(400).json({
+          success: false,
+          message: campaignErr.message || 'เกิดข้อผิดพลาดในการใช้แคมเปญ',
+        });
+      }
+    }
+
+    // 1 คูปองต่อ user ต่อร้าน ต่อวัน (reset หลังเที่ยงคืน) – ไม่ใช้คูปองเมื่อใช้แคมเปญ
+    if (couponCode && !appliedCampaign) {
       try {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -225,9 +274,9 @@ router.post('/', auth, async (req, res) => {
 
     const includeVat = !!shop.includeVat;
     const vatRate = (shop.vatRate != null && !Number.isNaN(Number(shop.vatRate))) ? Number(shop.vatRate) : 7;
-    const baseForVat = Math.max(0, subtotal - discountAmount);
+    const baseForVat = Math.max(0, subtotal - discountAmount - campaignDiscountAmount);
     const vatAmount = includeVat ? Math.round(baseForVat * vatRate / 100 * 100) / 100 : 0;
-    const total = subtotal + deliveryFee - discountAmount + vatAmount;
+    const total = subtotal + deliveryFee - discountAmount - campaignDiscountAmount + vatAmount;
 
     console.log(`📦 Creating order:`, {
       userId: userId.toString(),
@@ -254,6 +303,7 @@ router.post('/', auth, async (req, res) => {
       subtotal: subtotal,
       deliveryFee: deliveryFee,
       discountAmount: discountAmount,
+      campaignDiscountAmount: campaignDiscountAmount,
       vatAmount: vatAmount,
       total: total,
       deliveryAddress: deliveryAddress || '',
@@ -261,10 +311,10 @@ router.post('/', auth, async (req, res) => {
       notes: notes || '',
       paymentMethod: paymentMethod || 'cash',
       orderType: finalOrderType,
-      // cancelledBy is not set for new orders (will be undefined, which is valid)
       status: 'pending',
       paymentStatus: 'pending',
       coupon: coupon ? coupon._id : null,
+      appliedCampaign: appliedCampaign || null,
     });
 
     try {
@@ -325,7 +375,7 @@ router.post('/', auth, async (req, res) => {
 
         // Get contact phone from order or user
         const contactPhone = phone || user?.phone || shop?.phone || '';
-        
+
         const deliveryRequest = new DeliveryRequest({
           shop: shop._id,
           order: order._id,
@@ -351,7 +401,7 @@ router.post('/', auth, async (req, res) => {
           status: 'pending',
           rider: null, // Explicitly set to null to ensure it's not assigned
         });
-        
+
         console.log(`📝 Creating DeliveryRequest with:`, {
           shopId: shop._id,
           orderId: order._id,
@@ -377,7 +427,7 @@ router.post('/', auth, async (req, res) => {
           console.log(`   - DeliveryAddress: ${deliveryRequest.deliveryAddress || 'N/A'}`);
           console.log(`   - ShopId: ${deliveryRequest.shop?.toString() || shop._id.toString()}`);
           console.log(`   - OrderId: ${deliveryRequest.order?.toString() || order._id.toString()}`);
-          
+
           // Verify it was saved correctly
           const savedRequest = await DeliveryRequest.findById(deliveryRequest._id);
           console.log(`   - Verification: Found in DB: ${!!savedRequest}, Status: ${savedRequest?.status || 'N/A'}, Rider: ${savedRequest?.rider || 'null'}`);
@@ -405,13 +455,13 @@ router.post('/', auth, async (req, res) => {
           shop: verifyRequest?.shop?.toString() || 'N/A',
           order: verifyRequest?.order?.toString() || 'N/A'
         });
-        
+
         // Trigger auto-assignment (if enabled)
         try {
           console.log(`🔄 Attempting auto-assignment for DeliveryRequest ${deliveryRequest._id}...`);
           const autoAssignResult = await deliveryAssignmentService.autoAssignDelivery(deliveryRequest._id.toString());
           console.log(`📱 Auto-assignment result:`, autoAssignResult);
-          
+
           // Verify after auto-assignment
           const afterAutoAssign = await DeliveryRequest.findById(deliveryRequest._id);
           console.log(`🔍 After auto-assignment:`, {
@@ -424,7 +474,7 @@ router.post('/', auth, async (req, res) => {
           console.error('   Error:', autoAssignError.message);
           // Continue - rider can manually accept later
         }
-        
+
         // Final check: Count pending delivery requests
         const pendingCount = await DeliveryRequest.countDocuments({ status: 'pending', rider: null });
         console.log(`📊 Total pending delivery requests (rider: null): ${pendingCount}`);
@@ -471,11 +521,11 @@ router.get('/', auth, async (req, res) => {
     // Debug: Check all orders in database
     const totalOrdersInDB = await Order.countDocuments({});
     const deliveryOrdersCount = await Order.countDocuments({ orderType: 'delivery' });
-    const deliveryOrdersWithRequest = await Order.countDocuments({ 
-      orderType: 'delivery', 
-      deliveryRequest: { $exists: true, $ne: null } 
+    const deliveryOrdersWithRequest = await Order.countDocuments({
+      orderType: 'delivery',
+      deliveryRequest: { $exists: true, $ne: null }
     });
-    
+
     console.log(`📊 Order Statistics for user ${userId}:`);
     console.log(`   - Total orders in DB: ${totalOrdersInDB}`);
     console.log(`   - Total delivery orders: ${deliveryOrdersCount}`);
@@ -509,7 +559,7 @@ router.get('/', auth, async (req, res) => {
       .skip(skip);
 
     const total = await Order.countDocuments(query);
-    
+
     console.log(`📦 Found ${total} orders for user (returning ${orders.length})`);
     if (orders.length > 0) {
       orders.forEach(order => {
@@ -555,20 +605,20 @@ router.get('/debug/all', auth, async (req, res) => {
     const totalOrders = await Order.countDocuments({});
     const deliveryOrders = await Order.countDocuments({ orderType: 'delivery' });
     const dineInOrders = await Order.countDocuments({ orderType: 'dine_in' });
-    
+
     // Check orders with delivery requests
-    const ordersWithDeliveryRequest = await Order.countDocuments({ 
+    const ordersWithDeliveryRequest = await Order.countDocuments({
       orderType: 'delivery',
       deliveryRequest: { $exists: true, $ne: null }
     });
-    
+
     // Check delivery requests
     const totalDeliveryRequests = await DeliveryRequest.countDocuments({});
-    const pendingDeliveryRequests = await DeliveryRequest.countDocuments({ 
-      status: 'pending', 
-      rider: null 
+    const pendingDeliveryRequests = await DeliveryRequest.countDocuments({
+      status: 'pending',
+      rider: null
     });
-    
+
     // Get sample orders
     const sampleDeliveryOrders = await Order.find({ orderType: 'delivery' })
       .select('_id orderNumber orderType status deliveryRequest delivery createdAt')
@@ -577,7 +627,7 @@ router.get('/debug/all', auth, async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(5)
       .lean();
-    
+
     console.log(`🔍 DEBUG: Order Statistics:`);
     console.log(`   - Total orders in DB: ${totalOrders}`);
     console.log(`   - Delivery orders: ${deliveryOrders}`);
@@ -598,7 +648,7 @@ router.get('/debug/all', auth, async (req, res) => {
       deliveryId: o.delivery?._id?.toString() || 'null',
       createdAt: o.createdAt
     })));
-    
+
     res.json({
       success: true,
       data: {
@@ -663,25 +713,25 @@ router.get('/shop/:shopId', auth, async (req, res) => {
     // Try multiple ways to match: partnerId, user field, and ownerEmail
     const userIdStr = userId ? userId.toString() : null;
     const userIdObj = userId ? (mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : null) : null;
-    
+
     const partnerIdStr = shop.partnerId ? shop.partnerId.toString() : null;
     const partnerIdObj = shop.partnerId ? (mongoose.Types.ObjectId.isValid(shop.partnerId) ? new mongoose.Types.ObjectId(shop.partnerId) : null) : null;
-    
+
     const shopUserIdStr = shop.user ? shop.user.toString() : null;
     const shopUserIdObj = shop.user ? (mongoose.Types.ObjectId.isValid(shop.user) ? new mongoose.Types.ObjectId(shop.user) : null) : null;
-    
+
     const userEmail = req.user.email || req.user.userEmail;
     const ownerEmail = shop.ownerEmail;
 
     // Check ownership by ID (both string and ObjectId comparison)
-    const isOwnerById = 
+    const isOwnerById =
       (userIdStr && partnerIdStr && userIdStr === partnerIdStr) ||
       (userIdObj && partnerIdObj && userIdObj.equals(partnerIdObj)) ||
       (userIdStr && shopUserIdStr && userIdStr === shopUserIdStr) ||
       (userIdObj && shopUserIdObj && userIdObj.equals(shopUserIdObj));
 
     // Check ownership by email
-    const isOwnerByEmail = userEmail && ownerEmail && 
+    const isOwnerByEmail = userEmail && ownerEmail &&
       userEmail.toLowerCase().trim() === ownerEmail.toLowerCase().trim();
 
     const isShopOwner = isOwnerById || isOwnerByEmail;
@@ -1015,6 +1065,7 @@ router.get('/:id', auth, async (req, res) => {
       .populate('user', 'name email phone')
       .populate('items.menuItem', 'name price image')
       .populate('coupon', 'code discountType discountValue')
+      .populate('campaignsApplied.campaign', 'name description')
       .populate({
         path: 'deliveryRequest',
         populate: {
@@ -1041,35 +1092,35 @@ router.get('/:id', auth, async (req, res) => {
 
     // Check if user owns the order or is shop owner
     const isOwner = order.user._id.toString() === userId.toString();
-    
+
     // Fetch shop with all fields
     let shop = order.shop;
     if (!shop || typeof shop === 'string' || !shop.shopName) {
       shop = await Shop.findById(order.shop);
     }
-    
+
     // Try multiple ways to match: partnerId, user field, and ownerEmail
     const userIdStr = userId ? userId.toString() : null;
     const userIdObj = userId ? (mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : null) : null;
-    
+
     const partnerIdStr = shop?.partnerId ? shop.partnerId.toString() : null;
     const partnerIdObj = shop?.partnerId ? (mongoose.Types.ObjectId.isValid(shop.partnerId) ? new mongoose.Types.ObjectId(shop.partnerId) : null) : null;
-    
+
     const shopUserIdStr = shop?.user ? shop.user.toString() : null;
     const shopUserIdObj = shop?.user ? (mongoose.Types.ObjectId.isValid(shop.user) ? new mongoose.Types.ObjectId(shop.user) : null) : null;
-    
+
     const userEmail = req.user.email || req.user.userEmail;
     const ownerEmail = shop?.ownerEmail;
 
     // Check ownership by ID (both string and ObjectId comparison)
-    const isOwnerById = 
+    const isOwnerById =
       (userIdStr && partnerIdStr && userIdStr === partnerIdStr) ||
       (userIdObj && partnerIdObj && userIdObj.equals(partnerIdObj)) ||
       (userIdStr && shopUserIdStr && userIdStr === shopUserIdStr) ||
       (userIdObj && shopUserIdObj && userIdObj.equals(shopUserIdObj));
 
     // Check ownership by email
-    const isOwnerByEmail = userEmail && ownerEmail && 
+    const isOwnerByEmail = userEmail && ownerEmail &&
       userEmail.toLowerCase().trim() === ownerEmail.toLowerCase().trim();
 
     const isShopOwner = shop && (isOwnerById || isOwnerByEmail);
@@ -1129,29 +1180,29 @@ router.put('/:id/status', auth, async (req, res) => {
     }
 
     // Check if user is shop owner
-    
+
     // Try multiple ways to match: partnerId, user field, and ownerEmail
     const userIdStr = userId ? userId.toString() : null;
     const userIdObj = userId ? (mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : null) : null;
-    
+
     const partnerIdStr = shop?.partnerId ? shop.partnerId.toString() : null;
     const partnerIdObj = shop?.partnerId ? (mongoose.Types.ObjectId.isValid(shop.partnerId) ? new mongoose.Types.ObjectId(shop.partnerId) : null) : null;
-    
+
     const shopUserIdStr = shop?.user ? shop.user.toString() : null;
     const shopUserIdObj = shop?.user ? (mongoose.Types.ObjectId.isValid(shop.user) ? new mongoose.Types.ObjectId(shop.user) : null) : null;
-    
+
     const userEmail = req.user.email || req.user.userEmail;
     const ownerEmail = shop?.ownerEmail;
 
     // Check ownership by ID (both string and ObjectId comparison)
-    const isOwnerById = 
+    const isOwnerById =
       (userIdStr && partnerIdStr && userIdStr === partnerIdStr) ||
       (userIdObj && partnerIdObj && userIdObj.equals(partnerIdObj)) ||
       (userIdStr && shopUserIdStr && userIdStr === shopUserIdStr) ||
       (userIdObj && shopUserIdObj && userIdObj.equals(shopUserIdObj));
 
     // Check ownership by email
-    const isOwnerByEmail = userEmail && ownerEmail && 
+    const isOwnerByEmail = userEmail && ownerEmail &&
       userEmail.toLowerCase().trim() === ownerEmail.toLowerCase().trim();
 
     const isShopOwner = shop && (isOwnerById || isOwnerByEmail);
@@ -1202,6 +1253,15 @@ router.put('/:id/status', auth, async (req, res) => {
     }
 
     await order.save();
+
+    if (status === 'completed') {
+      try {
+        const { processCampaignCompletionsForOrder } = require('../services/campaignCompletionService');
+        await processCampaignCompletionsForOrder(order);
+      } catch (campaignErr) {
+        console.error('Campaign completion on order status update:', campaignErr);
+      }
+    }
 
     res.json({
       success: true,
@@ -1321,23 +1381,23 @@ router.put('/:id/payment-status', auth, async (req, res) => {
 
     // Check if user is order owner (customer) or shop owner
     const isOrderOwner = order.user._id.toString() === userId.toString();
-    
+
     // Check if user is shop owner
     let shop = order.shop;
     if (!shop || typeof shop === 'string' || !shop.shopName) {
       shop = await Shop.findById(order.shop).select('shopName shopId partnerId user ownerEmail');
     }
-    
+
     const userIdStr = userId ? userId.toString() : null;
     const partnerIdStr = shop?.partnerId ? shop.partnerId.toString() : null;
     const shopUserIdStr = shop?.user ? shop.user.toString() : null;
     const userEmail = req.user.email || req.user.userEmail;
     const ownerEmail = shop?.ownerEmail;
 
-    const isShopOwnerById = 
+    const isShopOwnerById =
       (userIdStr && partnerIdStr && userIdStr === partnerIdStr) ||
       (userIdStr && shopUserIdStr && userIdStr === shopUserIdStr);
-    const isShopOwnerByEmail = userEmail && ownerEmail && 
+    const isShopOwnerByEmail = userEmail && ownerEmail &&
       userEmail.toLowerCase().trim() === ownerEmail.toLowerCase().trim();
     const isShopOwner = shop && (isShopOwnerById || isShopOwnerByEmail);
 
@@ -1593,7 +1653,7 @@ router.put('/:id/cancel', auth, async (req, res) => {
         order._id,
         'customer_cancelled'
       );
-      
+
       // Send notification to shop owner
       if (order.shop) {
         const Shop = require('../models/Shop');
@@ -1614,7 +1674,7 @@ router.put('/:id/cancel', auth, async (req, res) => {
           );
         }
       }
-      
+
       // Send notification to rider if assigned
       if (order.delivery) {
         const Delivery = require('../models/Delivery');
@@ -1635,7 +1695,7 @@ router.put('/:id/cancel', auth, async (req, res) => {
           );
         }
       }
-      
+
       console.log(`📱 Sent cancellation notifications for order ${order.orderNumber || order._id}`);
     } catch (notifError) {
       console.error(`❌ Error sending cancellation notifications:`, notifError);
@@ -1680,7 +1740,7 @@ router.put('/:id/shop-cancel', auth, async (req, res) => {
         message: 'ไม่พบคำสั่งซื้อ',
       });
     }
-    
+
     console.log(`📋 Order found:`, {
       orderId: order._id.toString(),
       orderNumber: order.orderNumber || 'N/A',
@@ -1697,23 +1757,23 @@ router.put('/:id/shop-cancel', auth, async (req, res) => {
 
     const userIdStr = userId ? userId.toString() : null;
     const userIdObj = userId ? (mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : null) : null;
-    
+
     const partnerIdStr = shop?.partnerId ? shop.partnerId.toString() : null;
     const partnerIdObj = shop?.partnerId ? (mongoose.Types.ObjectId.isValid(shop.partnerId) ? new mongoose.Types.ObjectId(shop.partnerId) : null) : null;
-    
+
     const shopUserIdStr = shop?.user ? shop.user.toString() : null;
     const shopUserIdObj = shop?.user ? (mongoose.Types.ObjectId.isValid(shop.user) ? new mongoose.Types.ObjectId(shop.user) : null) : null;
-    
+
     const userEmail = req.user.email || req.user.userEmail;
     const ownerEmail = shop?.ownerEmail;
 
-    const isOwnerById = 
+    const isOwnerById =
       (userIdStr && partnerIdStr && userIdStr === partnerIdStr) ||
       (userIdObj && partnerIdObj && userIdObj.equals(partnerIdObj)) ||
       (userIdStr && shopUserIdStr && userIdStr === shopUserIdStr) ||
       (userIdObj && shopUserIdObj && userIdObj.equals(shopUserIdObj));
 
-    const isOwnerByEmail = userEmail && ownerEmail && 
+    const isOwnerByEmail = userEmail && ownerEmail &&
       userEmail.toLowerCase().trim() === ownerEmail.toLowerCase().trim();
 
     const isShopOwner = shop && (isOwnerById || isOwnerByEmail);
@@ -1750,12 +1810,12 @@ router.put('/:id/shop-cancel', auth, async (req, res) => {
         message: `ไม่สามารถยกเลิกคำสั่งซื้อที่อยู่ในสถานะ "${order.status}" ได้`,
       });
     }
-    
+
     console.log(`✅ Order ${order.orderNumber || order._id} can be cancelled - proceeding...`);
 
     // Apply penalty points ONLY to shop owner (the one who cancelled)
     const penaltyPoints = await QuestSettings.getSetting('order_cancel_penalty_points') || 5;
-    
+
     // Get shop owner user
     const shopOwnerUserId = shop.partnerId || shop.user;
     if (shopOwnerUserId && penaltyPoints > 0) {
@@ -1814,14 +1874,14 @@ router.put('/:id/shop-cancel', auth, async (req, res) => {
     const notificationService = require('../services/notificationService');
     try {
       console.log(`📱 Sending cancellation notifications for order ${order.orderNumber || order._id} (shop cancelled)...`);
-      
+
       // Send notification to customer
       const customerNotifResult = await notificationService.sendOrderCancelledNotification(
         order._id,
         'shop_cancelled'
       );
       console.log(`   Customer notification result:`, customerNotifResult);
-      
+
       // Send notification to shop owner (confirmation)
       if (shopOwnerUserId) {
         const shopOwnerNotifResult = await notificationService.sendNotificationToUser(
@@ -1841,7 +1901,7 @@ router.put('/:id/shop-cancel', auth, async (req, res) => {
       } else {
         console.log(`   ⚠️ No shop owner user ID found for notification`);
       }
-      
+
       // Send notification to rider if assigned
       if (order.delivery) {
         const Delivery = require('../models/Delivery');
@@ -1867,7 +1927,7 @@ router.put('/:id/shop-cancel', auth, async (req, res) => {
       } else {
         console.log(`   ℹ️ No delivery assigned to order`);
       }
-      
+
       console.log(`✅ Sent cancellation notifications for order ${order.orderNumber || order._id}`);
     } catch (notifError) {
       console.error(`❌ Error sending cancellation notifications:`, notifError);

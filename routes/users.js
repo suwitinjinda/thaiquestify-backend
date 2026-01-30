@@ -585,7 +585,7 @@ router.get('/notification-token/status', auth, async (req, res) => {
   try {
     const userId = req.user.id || req.user._id;
     const user = await User.findById(userId).select('notificationToken notificationTokenUpdatedAt email name');
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -621,11 +621,7 @@ router.put('/notification-token', auth, async (req, res) => {
     const { notificationToken } = req.body;
     const userId = req.user.id || req.user._id;
 
-    console.log(`📱 Notification token update request from user ${userId}`);
-    console.log(`   Token received: ${notificationToken ? notificationToken.substring(0, 30) + '...' : 'null'}`);
-
     if (!notificationToken) {
-      console.log(`   ❌ No token provided`);
       return res.status(400).json({
         success: false,
         message: 'กรุณาระบุ notification token'
@@ -635,14 +631,11 @@ router.put('/notification-token', auth, async (req, res) => {
     // Validate Expo push token format (starts with ExponentPushToken or Expon)
     const isValidExpoToken = /^(ExponentPushToken|ExpoPushToken)[A-Za-z0-9_-]+$/.test(notificationToken);
     if (!isValidExpoToken) {
-      console.log(`   ❌ Invalid token format: ${notificationToken.substring(0, 30)}...`);
       return res.status(400).json({
         success: false,
         message: 'รูปแบบ notification token ไม่ถูกต้อง'
       });
     }
-
-    console.log(`   ✅ Token format is valid`);
 
     const user = await User.findByIdAndUpdate(
       userId,
@@ -815,7 +808,7 @@ router.get('/me/points/transactions', auth, async (req, res) => {
     }
 
     const query = { userId };
-    
+
     if (type) query.type = type;
     if (status) query.status = status;
     if (startDate || endDate) {
@@ -900,7 +893,7 @@ router.get('/:userId/points/transactions', auth, async (req, res) => {
     const skip = (page - 1) * limit;
 
     const query = { userId };
-    
+
     if (type) query.type = type;
     if (status) query.status = status;
     if (startDate || endDate) {

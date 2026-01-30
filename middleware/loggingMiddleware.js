@@ -12,38 +12,36 @@ const generateTraceId = () => {
   return `trace-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 };
 
+// Paths to skip request/response logging (noise reduction)
+const SKIP_LOG_PATHS = ['/', '/favicon.ico', '/sitemap.xml', '/api/health'];
+
 /**
  * Request logging middleware
- * Logs incoming API requests with metadata
+ * - Skips noisy paths (/, favicon, sitemap, health)
+ * - Default: only logs 4xx/5xx responses (errors). Set LOG_REQUESTS=1 for full request/response logs
  */
 const requestLogger = (req, res, next) => {
-  // Skip logging for health checks and static assets
-  if (req.path === '/health' || req.path.startsWith('/static')) {
+  if (req.path === '/health' || req.path.startsWith('/static') || SKIP_LOG_PATHS.includes(req.path)) {
     return next();
   }
 
-  // Generate trace ID for this request
   req.traceId = req.headers['x-trace-id'] || generateTraceId();
   res.setHeader('X-Trace-Id', req.traceId);
-
-  // Record request start time
   req.startTime = Date.now();
 
-  // Log API request
-  logger.apiRequest(req);
+  const logAll = process.env.LOG_REQUESTS === '1';
 
-  // Capture original end function
+  if (logAll) {
+    logger.apiRequest(req);
+  }
+
   const originalEnd = res.end;
-
-  // Override end function to log response
-  res.end = function(chunk, encoding) {
-    // Calculate response time
+  res.end = function (chunk, encoding) {
     const responseTime = Date.now() - req.startTime;
-
-    // Log API response
-    logger.apiResponse(req, res, { responseTime });
-
-    // Call original end function
+    // Only log 4xx/5xx by default; full logs when LOG_REQUESTS=1
+    if (logAll || res.statusCode >= 400) {
+      logger.apiResponse(req, res, { responseTime });
+    }
     originalEnd.call(this, chunk, encoding);
   };
 

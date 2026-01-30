@@ -61,14 +61,14 @@ router.get('/', auth, async (req, res) => {
       // Use riderCode for easier querying, but also support rider (User ID) for backward compatibility
       const Rider = require('../models/Rider');
       const rider = await Rider.findOne({ user: userId });
-      
+
       console.log(`🔍 Querying deliveries for rider:`, {
         userId: userId.toString(),
         hasRider: !!rider,
         riderId: rider?._id?.toString() || 'N/A',
         riderCode: rider?.riderCode || 'N/A'
       });
-      
+
       if (rider && rider.riderCode) {
         // Query by riderCode OR rider (User ID) to support both new and old deliveries
         query.$or = [
@@ -110,7 +110,7 @@ router.get('/', auth, async (req, res) => {
 
     // Log query details for debugging
     console.log(`🔍 Delivery query:`, JSON.stringify(query, null, 2));
-    
+
     const deliveries = await Delivery.find(query)
       .populate('order', 'orderNumber subtotal total status')
       .populate('shop', 'shopName shopId phone address coordinates')
@@ -121,7 +121,7 @@ router.get('/', auth, async (req, res) => {
       .skip(skip);
 
     const total = await Delivery.countDocuments(query);
-    
+
     console.log(`📦 Found ${total} deliveries matching query (returning ${deliveries.length})`);
     if (deliveries.length > 0) {
       console.log(`✅ Sample delivery:`, {
@@ -191,7 +191,7 @@ router.get('/', auth, async (req, res) => {
 router.post('/calculate-fee', auth, async (req, res) => {
   try {
     const { distance } = req.body;
-    
+
     if (!distance || distance < 0) {
       return res.status(400).json({
         success: false,
@@ -200,7 +200,7 @@ router.post('/calculate-fee', auth, async (req, res) => {
     }
 
     const deliveryFee = await deliveryAssignmentService.calculateDeliveryFee(distance);
-    
+
     res.json({
       success: true,
       data: {
@@ -291,7 +291,7 @@ router.get('/available-for-rider', auth, async (req, res) => {
       .populate('user', 'name email phone');
 
     console.log(`🔍 Checking rider ${riderId}...`);
-    
+
     if (!rider) {
       console.log(`❌ Rider not found for user ${riderId}`);
       return res.status(403).json({
@@ -338,14 +338,14 @@ router.get('/available-for-rider', auth, async (req, res) => {
         { expiresAt: null }, // No expiry set
       ],
     };
-    
+
     // Check rejectedBy separately to avoid query issues
     // Exclude requests rejected by this rider
     const rejectedQuery = {
       ...query,
       rejectedBy: { $ne: riderId },
     };
-    
+
     // Log query details including rider code
     console.log(`🔍 Query for pending requests:`, {
       status: 'pending',
@@ -354,7 +354,7 @@ router.get('/available-for-rider', auth, async (req, res) => {
       riderId: rider._id.toString(),
       userId: rider.user?._id?.toString() || rider.user?.toString() || 'N/A'
     });
-    
+
     // First, check total pending requests (for debugging)
     const totalPending = await DeliveryRequest.countDocuments({ status: 'pending' });
     const totalPendingWithNullRider = await DeliveryRequest.countDocuments({ status: 'pending', rider: null });
@@ -362,13 +362,13 @@ router.get('/available-for-rider', auth, async (req, res) => {
     const totalAllStatuses = await DeliveryRequest.aggregate([
       { $group: { _id: '$status', count: { $sum: 1 } } }
     ]);
-    
+
     console.log(`📊 DeliveryRequest Statistics:`);
     console.log(`   - Total in DB: ${totalAllRequests}`);
     console.log(`   - Total pending: ${totalPending}`);
     console.log(`   - Total pending (rider=null): ${totalPendingWithNullRider}`);
     console.log(`   - Status breakdown:`, totalAllStatuses.map(s => `${s._id}: ${s.count}`).join(', '));
-    
+
     // Get sample of all pending requests (even with rider assigned) for debugging
     if (totalPending > 0) {
       const samplePending = await DeliveryRequest.find({ status: 'pending' })
@@ -385,7 +385,7 @@ router.get('/available-for-rider', auth, async (req, res) => {
         rejectedBy: r.rejectedBy?.map(id => id.toString()) || []
       })));
     }
-    
+
     // First, check and cancel expired requests immediately
     // Use the 'now' variable already declared above
     const expiredRequests = await DeliveryRequest.find({
@@ -396,7 +396,7 @@ router.get('/available-for-rider', auth, async (req, res) => {
       .populate('order')
       .populate('shop')
       .lean();
-    
+
     if (expiredRequests.length > 0) {
       console.log(`⏰ Found ${expiredRequests.length} expired request(s) - cancelling immediately...`);
       const deliveryAssignmentService = require('../services/deliveryAssignmentService');
@@ -406,13 +406,13 @@ router.get('/available-for-rider', auth, async (req, res) => {
           const DeliveryRequestModel = require('../models/DeliveryRequest');
           const Order = require('../models/Order');
           const Delivery = require('../models/Delivery');
-          
+
           // Update delivery request status
           await DeliveryRequestModel.findByIdAndUpdate(expiredRequest._id, {
             status: 'cancelled',
             cancellationReason: 'expired_no_rider_response'
           });
-          
+
           // Cancel the associated order
           if (expiredRequest.order) {
             const orderId = expiredRequest.order._id || expiredRequest.order;
@@ -420,13 +420,13 @@ router.get('/available-for-rider', auth, async (req, res) => {
             if (order && !['completed', 'cancelled'].includes(order.status)) {
               order.status = 'cancelled';
               order.cancelledBy = 'system';
-              order.notes = order.notes 
-                ? `${order.notes}\n[Auto-cancelled: Delivery request expired]` 
+              order.notes = order.notes
+                ? `${order.notes}\n[Auto-cancelled: Delivery request expired]`
                 : '[Auto-cancelled: Delivery request expired]';
               await order.save();
-              
+
               console.log(`✅ Cancelled order ${order.orderNumber || order._id} - delivery request expired`);
-              
+
               // Send notification
               const notificationService = require('../services/notificationService');
               try {
@@ -442,7 +442,7 @@ router.get('/available-for-rider', auth, async (req, res) => {
               } catch (notifError) {
                 console.error(`❌ Error sending expiration notification:`, notifError);
               }
-              
+
               // Cancel related delivery if exists
               if (order.delivery) {
                 const delivery = await Delivery.findById(order.delivery);
@@ -458,20 +458,20 @@ router.get('/available-for-rider', auth, async (req, res) => {
         }
       }
     }
-    
+
     // First find all pending requests with null rider
     const allPendingRequests = await DeliveryRequest.find(query)
       .populate('shop', 'shopName shopId phone address coordinates')
       .populate('order', 'orderNumber subtotal total status orderType')
       .sort({ priority: -1, createdAt: -1 })
       .lean();
-    
+
     console.log(`\n📦 Found ${allPendingRequests.length} pending delivery requests (rider: null) before filtering rejectedBy`);
-    
+
     // Filter out requests rejected by this rider
     const requests = allPendingRequests.filter(request => {
       const rejectedBy = request.rejectedBy || [];
-      const isRejected = rejectedBy.some(rejectedId => 
+      const isRejected = rejectedBy.some(rejectedId =>
         rejectedId.toString() === riderId.toString()
       );
       if (isRejected) {
@@ -479,14 +479,14 @@ router.get('/available-for-rider', auth, async (req, res) => {
       }
       return !isRejected;
     });
-    
+
     console.log(`   After filtering rejectedBy: ${requests.length} requests available`);
     console.log(`   Query used:`, JSON.stringify(query, null, 2));
-    
+
     if (requests.length === 0 && allPendingRequests.length > 0) {
       console.log(`   ⚠️ All ${allPendingRequests.length} pending requests were rejected by this rider`);
     }
-    
+
     if (requests.length === 0) {
       // Check if there are any pending requests at all (even with rider assigned)
       const allPending = await DeliveryRequest.countDocuments({ status: 'pending' });
@@ -495,7 +495,7 @@ router.get('/available-for-rider', auth, async (req, res) => {
       console.log(`   - Pending with rider assigned: ${pendingWithRider}`);
       console.log(`   - Pending without rider: ${totalPendingWithNullRider}`);
     }
-    
+
     // Log sample request details if any found
     if (requests.length > 0) {
       console.log(`📋 Sample request:`, {
@@ -538,7 +538,7 @@ router.get('/available-for-rider', auth, async (req, res) => {
       console.log(`   - Request distance: ${request.distance}km`);
       console.log(`   - Rider coordinates: lat=${rider.coordinates?.latitude}, lng=${rider.coordinates?.longitude}`);
       console.log(`   - Rider service radius: ${rider.serviceRadius}km`);
-      
+
       if (!request.shop || !request.shop.coordinates) {
         console.log(`   ⚠️ SKIPPED: Request ${request._id} has no shop or shop coordinates`);
         continue;
@@ -570,14 +570,14 @@ router.get('/available-for-rider', auth, async (req, res) => {
       const now = new Date();
       const expiresAt = request.expiresAt;
       const isExpired = expiresAt && new Date(expiresAt) < now;
-      
+
       if (isExpired) {
         console.log(`   ⚠️ SKIPPED: Request ${request._id} has expired (expiresAt: ${expiresAt.toISOString()})`);
         // Don't include expired requests in available list
         // They will be handled by checkAndCancelOldPendingRequests
         continue;
       }
-      
+
       // Check if within service radius
       if (totalDistance <= rider.serviceRadius) {
         // Calculate delivery fee and total price
@@ -587,7 +587,7 @@ router.get('/available-for-rider', auth, async (req, res) => {
         // Total price should match order.total (which is subtotal + deliveryFee - discountAmount)
         // Use order.total as the source of truth
         const totalPrice = request.order?.total || (foodCost + deliveryFee);
-        
+
         // request is already a plain object from .lean(), so we can use it directly
         // Calculate time remaining for debugging
         let timeRemaining = null;
@@ -597,13 +597,13 @@ router.get('/available-for-rider', auth, async (req, res) => {
           const diffMinutes = Math.floor(diffSeconds / 60);
           timeRemaining = { seconds: diffSeconds, minutes: diffMinutes };
         }
-        
+
         console.log(`   ⏰ Request ${request.requestNumber} expiresAt:`, {
           expiresAt: expiresAt ? expiresAt.toISOString() : 'null',
           timeRemaining: timeRemaining ? `${timeRemaining.minutes}:${String(timeRemaining.seconds % 60).padStart(2, '0')}` : 'N/A',
           timeRemainingSeconds: timeRemaining?.seconds || 'N/A'
         });
-        
+
         availableRequests.push({
           ...request,
           distanceToShop: distanceToShop.toFixed(2),
@@ -699,7 +699,7 @@ router.get('/available-riders', auth, adminAuth, async (req, res) => {
     // Filter by maxDistance if provided
     let filteredRiders = ridersWithInfo;
     if (maxDistance) {
-      filteredRiders = ridersWithInfo.filter(r => 
+      filteredRiders = ridersWithInfo.filter(r =>
         r.distanceToShop && parseFloat(r.distanceToShop) <= parseFloat(maxDistance)
       );
     }
@@ -796,7 +796,7 @@ router.post('/:id/accept', auth, async (req, res) => {
 
     // Check if it's a DeliveryRequest first (most common case)
     const deliveryRequest = await DeliveryRequest.findById(requestId);
-    
+
     if (deliveryRequest) {
       // This is a DeliveryRequest - handle it
       const Rider = require('../models/Rider');
@@ -814,9 +814,9 @@ router.post('/:id/accept', auth, async (req, res) => {
         riderCode: rider.riderCode || 'N/A',
         userId: userId.toString(),
       });
-      
+
       const result = await deliveryAssignmentService.acceptDelivery(requestId, rider._id);
-      
+
       console.log(`✅ Accept delivery result:`, {
         success: result.success,
         deliveryId: result.delivery?._id?.toString() || 'N/A',
@@ -926,33 +926,33 @@ router.put('/:id/status', auth, upload.single('deliveryPhoto'), async (req, res)
         // Upload to GCP Storage
         const fs = require('fs');
         const path = require('path');
-        
+
         // Check if GCP is configured
         const hasGCPConfig = process.env.GCP_SERVICE_ACCOUNT_KEY || process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CLOUD_PROJECT_ID;
-        
+
         if (hasGCPConfig) {
           try {
             const { uploadImage, getSignedUrl } = require('../utils/gcpStorage');
-            
+
             // Read the uploaded file
             const filePath = req.file.path;
             const imageBuffer = fs.readFileSync(filePath);
             const mimeType = req.file.mimetype || 'image/jpeg';
-            
+
             // Generate unique filename for GCP
             const deliveryId = req.params.id;
             const fileExtension = path.extname(req.file.originalname) || '.jpg';
             const fileName = `deliveries/${deliveryId}/delivery_photo_${Date.now()}${fileExtension}`;
-            
+
             // Upload to GCP
             const gcpUrl = await uploadImage(imageBuffer, fileName, mimeType);
             console.log(`✅ Delivery photo uploaded to GCP: ${gcpUrl}`);
-            
+
             // Store GCP URL in database (not signed URL)
             // Signed URL will be generated when fetching delivery details
             deliveryPhotoUrl = gcpUrl;
             console.log(`✅ Delivery photo GCP URL stored: ${deliveryPhotoUrl}`);
-            
+
             // Delete local file after upload
             try {
               fs.unlinkSync(filePath);
@@ -997,6 +997,15 @@ router.put('/:id/status', auth, upload.single('deliveryPhoto'), async (req, res)
       // Update order status (shop delivery fee already deducted when rider accepted + shop confirmed)
       if (delivery.order) {
         await Order.findByIdAndUpdate(delivery.order, { status: 'completed' });
+        try {
+          const orderForCampaign = await Order.findById(delivery.order).populate('user', 'name').populate('shop', 'shopName').lean();
+          if (orderForCampaign) {
+            const { processCampaignCompletionsForOrder } = require('../services/campaignCompletionService');
+            await processCampaignCompletionsForOrder(orderForCampaign);
+          }
+        } catch (campaignErr) {
+          console.error('Campaign completion on delivery:', campaignErr);
+        }
       }
     }
     await delivery.save();
@@ -1018,7 +1027,7 @@ router.put('/:id/status', auth, upload.single('deliveryPhoto'), async (req, res)
           delivered: 'จัดส่งสำเร็จแล้ว',
           cancelled: 'งานจัดส่งถูกยกเลิก',
         };
-        
+
         await createDeliveryStatusNotification(
           riderUserId,
           delivery._id.toString(),
@@ -1037,7 +1046,7 @@ router.put('/:id/status', auth, upload.single('deliveryPhoto'), async (req, res)
         const riderUserId = delivery.rider._id || delivery.rider;
         const deliveryRequest = await DeliveryRequest.findOne({ delivery: delivery._id });
         const riderFee = deliveryRequest?.riderFee || 0;
-        
+
         if (riderFee > 0) {
           await createRiderEarningsNotification(
             riderUserId,
@@ -1324,9 +1333,9 @@ router.post('/:requestId/accept', auth, async (req, res) => {
       userId: riderId.toString(),
       riderUserId: rider.user?._id?.toString() || rider.user?.toString() || 'N/A'
     });
-    
+
     const result = await deliveryAssignmentService.acceptDelivery(requestId, rider._id);
-    
+
     console.log(`✅ Accept delivery result:`, {
       success: result.success,
       deliveryId: result.delivery?._id?.toString() || 'N/A',
@@ -1394,7 +1403,7 @@ router.post('/:requestId/reject', auth, async (req, res) => {
       deliveryRequest.rejectedBy = [];
     }
     // Check if this user ID is already in rejectedBy
-    const isAlreadyRejected = deliveryRequest.rejectedBy.some(rejectedId => 
+    const isAlreadyRejected = deliveryRequest.rejectedBy.some(rejectedId =>
       rejectedId.toString() === riderId.toString()
     );
     if (!isAlreadyRejected) {
@@ -1415,7 +1424,7 @@ router.post('/:requestId/reject', auth, async (req, res) => {
     // Check if there are any other available riders (excluding rejected ones)
     const deliveryAssignmentService = require('../services/deliveryAssignmentService');
     const availableRiders = await deliveryAssignmentService.findAvailableRiders(deliveryRequest);
-    
+
     // Filter out riders who have already rejected this request
     // rejectedBy contains User IDs, and availableRiders contains objects with { rider, score, ... }
     // where rider.user is populated with User document
@@ -1425,7 +1434,7 @@ router.post('/:requestId/reject', auth, async (req, res) => {
       const riderUserId = r.rider?.user?._id || r.rider?.user || null;
       if (!riderUserId) return false;
       // Check if this rider's user ID is in rejectedBy array
-      return !rejectedBy.some(rejectedId => 
+      return !rejectedBy.some(rejectedId =>
         rejectedId.toString() === riderUserId.toString()
       );
     });
@@ -1433,14 +1442,14 @@ router.post('/:requestId/reject', auth, async (req, res) => {
     // If no riders available, cancel order and delivery request
     if (remainingRiders.length === 0) {
       console.log(`⚠️ No available riders left for delivery request ${requestId} - cancelling order and request`);
-      
+
       const Order = require('../models/Order');
       const Delivery = require('../models/Delivery');
-      
+
       // Cancel delivery request
       deliveryRequest.status = 'cancelled';
       await deliveryRequest.save();
-      
+
       // Cancel related order if exists
       if (deliveryRequest.order) {
         const order = await Order.findById(deliveryRequest.order);
@@ -1449,7 +1458,7 @@ router.post('/:requestId/reject', auth, async (req, res) => {
           await order.save();
           console.log(`✅ Cancelled order ${order._id} due to no available riders`);
         }
-        
+
         // Cancel delivery if exists
         if (order.delivery) {
           const delivery = await Delivery.findById(order.delivery);

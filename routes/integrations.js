@@ -25,21 +25,6 @@ router.get('/tiktok/status', auth, async (req, res) => {
     try {
         const user = await User.findById(req.user.id).select('integrations');
         const tiktok = user?.integrations?.tiktok;
-
-        // 🐛 DEBUG: Log raw TikTok data from database
-        console.log('🔍 [DEBUG] Backend TikTok Status - Raw data from DB:', {
-            userId: req.user.id,
-            hasUser: !!user,
-            hasTiktok: !!tiktok,
-            tiktokRaw: JSON.stringify(tiktok, null, 2),
-            openId: tiktok?.openId,
-            displayName: tiktok?.displayName,
-            username: tiktok?.username,
-            connectedAt: tiktok?.connectedAt,
-            scope: tiktok?.scope,
-            hasAccessToken: !!tiktok?.accessToken,
-        });
-
         const connected = !!(tiktok?.connectedAt && tiktok?.openId);
         // Use username if available (e.g., "noom2419"), fallback to displayName (e.g., "noom")
         const username = tiktok?.username || tiktok?.displayName || null;
@@ -72,7 +57,7 @@ router.get('/tiktok/status', auth, async (req, res) => {
                     await user.save();
                 }
             } catch (statsError) {
-                console.log('⚠️ TikTok stats fetch failed:', statsError?.message || statsError);
+                if (process.env.DEBUG_TIKTOK === '1') console.warn('⚠️ TikTok stats fetch failed:', statsError?.message || statsError);
                 // Use saved stats if fetch fails
                 if (tiktok?.stats) {
                     stats = tiktok.stats;
@@ -94,16 +79,6 @@ router.get('/tiktok/status', auth, async (req, res) => {
             lastSynced: tiktok?.connectedAt || null,
             lastStatsUpdate: tiktok?.lastStatsUpdate || null,
         };
-
-        // 🐛 DEBUG: Log response data that will be sent
-        console.log('📤 [DEBUG] Backend TikTok Status - Response being sent:', JSON.stringify(responseData, null, 2));
-        console.log('🔑 [DEBUG] Backend TikTok Status - Key values:', {
-            connected,
-            openId: responseData.openId,
-            username: responseData.username,
-            'openId type': typeof responseData.openId,
-            'openId length': responseData.openId?.length,
-        });
 
         return res.json(responseData);
     } catch (error) {
@@ -387,7 +362,7 @@ router.post('/tiktok/disconnect', auth, async (req, res) => {
 router.get('/tiktok/challenges', auth, async (req, res) => {
     try {
         const { limit = 10, sort = 'trending', includeJoined = false } = req.query;
-        
+
         // TODO: Implement actual TikTok challenges API integration
         // For now, return mock/placeholder data
         const challenges = [
@@ -429,7 +404,7 @@ router.get('/tiktok/challenges', auth, async (req, res) => {
 router.post('/tiktok/challenges/:challengeId/join', auth, async (req, res) => {
     try {
         const { challengeId } = req.params;
-        
+
         // TODO: Implement actual TikTok challenge join logic
         // For now, return success response
         return res.json({

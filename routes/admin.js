@@ -1090,7 +1090,7 @@ router.get('/partner-registrations', auth, adminAuth, async (req, res) => {
     const query = status ? { status } : {};
 
     const partners = await Partner.find(query)
-      .populate('userId', 'name email photo')
+      .populate('userId', 'name email photo isActive')
       .populate('approvedBy', 'name email')
       .sort({ createdAt: -1 })
       .lean();
@@ -1222,6 +1222,56 @@ router.post('/partner-registrations/:id/approve', auth, adminAuth, async (req, r
     res.status(500).json({
       success: false,
       message: error.message
+    });
+  }
+});
+
+/**
+ * Normalize province name for matching (strip "จังหวัด", "ฯ", trim).
+ * So "แพร่" matches "จังหวัดแพร่" and vice versa.
+ */
+function normalizeProvinceForMatch(name) {
+  if (!name || typeof name !== 'string') return '';
+  return name.replace(/จังหวัด/g, '').replace(/ฯ/g, '').trim();
+}
+
+/**
+ * GET /api/v2/admin/partners-by-province
+ * Get approved partners in a province (for shop-request assign dropdown).
+ * Matches province with/without "จังหวัด" prefix (e.g. แพร่ = จังหวัดแพร่).
+ */
+router.get('/partners-by-province', auth, adminAuth, async (req, res) => {
+  try {
+    const { province } = req.query;
+    if (!province || typeof province !== 'string') {
+      return res.status(400).json({
+        success: false,
+        message: 'Query parameter province is required'
+      });
+    }
+    const raw = province.trim();
+    const normalized = normalizeProvinceForMatch(raw);
+    const withPrefix = normalized ? `จังหวัด${normalized}` : '';
+    const provinceVariants = [raw, normalized, withPrefix].filter(Boolean);
+    const unique = [...new Set(provinceVariants)];
+
+    const partners = await Partner.find({
+      status: 'approved',
+      'workingArea.province': { $in: unique }
+    })
+      .populate('userId', 'name email phone')
+      .sort({ partnerCode: 1 })
+      .lean();
+
+    return res.json({
+      success: true,
+      data: partners
+    });
+  } catch (error) {
+    console.error('❌ Error getting partners by province:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get partners'
     });
   }
 });
@@ -1683,8 +1733,8 @@ router.get('/revenue-commission', auth, adminAuth, async (req, res) => {
       data: {
         revenue: {
           totalPlatformPoints: totalPlatformRevenue,
-          byFeeType: { 
-            delivery: byFeeType.delivery, 
+          byFeeType: {
+            delivery: byFeeType.delivery,
             dine_in: byFeeType.dine_in,
             job_application_fee: byFeeType.job_application_fee,
             job_commission_fee: byFeeType.job_commission_fee
@@ -1803,7 +1853,7 @@ router.get('/fee-commission-statistics', auth, adminAuth, async (req, res) => {
 
     // Combine data by date
     const dataMap = new Map();
-    
+
     // Add fee data
     feeAgg.forEach(item => {
       dataMap.set(item._id, {
@@ -1884,7 +1934,7 @@ router.get('/platform-fee-history', auth, adminAuth, async (req, res) => {
 
     // Get ShopFeeSplitRecord with platformShare > 0, sorted by createdAt desc
     const query = { platformShare: { $gt: 0 } };
-    
+
     const total = await ShopFeeSplitRecord.countDocuments(query);
     const records = await ShopFeeSplitRecord.find(query)
       .populate('shop', 'name')
@@ -1901,7 +1951,7 @@ router.get('/platform-fee-history', auth, adminAuth, async (req, res) => {
     const formattedRecords = records.map(record => {
       let source = '';
       let sourceName = '';
-      
+
       if (record.feeType === 'delivery' || record.feeType === 'dine_in') {
         source = 'ร้าน';
         sourceName = record.shopName || record.shop?.name || 'N/A';
@@ -1999,19 +2049,19 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
     if (useOmisePayout && process.env.OMISE_SECRET_KEY) {
       try {
         const paymentService = require('../services/paymentService');
-        
+
         // Check Omise balance first (use transferable balance, not available)
         const balance = await paymentService.getBalance();
         const transferableBalance = (balance.transferable || 0) / 100; // Convert from satang to THB
         const availableBalance = (balance.available || 0) / 100; // Also check available for reference
-        
+
         console.log(`💰 Omise balance check: transferable=${transferableBalance} THB, available=${availableBalance} THB, required=${cashReward.amount} THB`);
-        
+
         if (transferableBalance < cashReward.amount) {
           console.warn(`⚠️ Omise transferable balance insufficient: ${transferableBalance} THB < ${cashReward.amount} THB`);
           console.warn(`   Total balance: ${(balance.total || 0) / 100} THB, On Hold: ${(balance.on_hold || 0) / 100} THB`);
           console.warn(`   Funds are on hold and not yet transferable. Transfer will be pending until funds become transferable.`);
-          
+
           // Store balance info in metadata
           if (!cashReward.metadata) {
             cashReward.metadata = {};
@@ -2023,7 +2073,7 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
             onHold: (balance.on_hold || 0) / 100
           };
           cashReward.metadata.insufficientTransferableBalance = true;
-          
+
           // Notify admins that transferable balance is insufficient
           try {
             const { createManualTransferRequiredNotification } = require('../utils/notificationHelper');
@@ -2040,14 +2090,14 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
           } catch (notifError) {
             console.error('⚠️ Failed to send insufficient balance notification:', notifError);
           }
-          
+
           // Continue with approval but note that transfer will be pending
         } else {
           // Use existing recipient from user's bankAccount (created during verification approval)
           // Only create new recipient if it doesn't exist
           let recipient = null;
           let recipientStatus = null;
-          
+
           if (user.bankAccount?.omiseRecipientId) {
             // User already has recipient from verification approval
             try {
@@ -2061,12 +2111,12 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
               recipient = null; // Mark as not found
             }
           }
-          
+
           // If no valid recipient found, skip Omise payout and require manual transfer
           if (!recipient) {
             console.warn(`⚠️ No Omise recipient found for user ${user._id}. Recipient should have been created during verification approval.`);
             console.log(`   Skipping Omise transfer - manual transfer required`);
-            
+
             // Store metadata
             if (!cashReward.metadata) {
               cashReward.metadata = {};
@@ -2074,7 +2124,7 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
             cashReward.metadata.payoutSkipped = true;
             cashReward.metadata.payoutSkippedReason = 'No Omise recipient found - recipient should be created during verification approval';
             cashReward.metadata.requiresManualTransfer = true;
-            
+
             // Notify admins that manual transfer is needed
             try {
               const { createManualTransferRequiredNotification } = require('../utils/notificationHelper');
@@ -2098,7 +2148,7 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
             }
             cashReward.metadata.omiseRecipientId = recipient.id;
             cashReward.metadata.recipientStatus = recipientStatus;
-            
+
             if (!recipientStatus.canReceiveTransfers) {
               console.warn(`⚠️ Recipient ${recipient.id} cannot receive transfers:`, recipientStatus.issues);
               cashReward.metadata.recipientIssues = recipientStatus.issues;
@@ -2107,7 +2157,7 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
               cashReward.metadata.requiresManualTransfer = true;
               console.log(`⏳ Skipping Omise transfer creation - recipient not ready. Status: verified=${recipientStatus.verified}, active=${recipientStatus.active}`);
               console.log(`   Admin can process manually later or wait for recipient verification (usually 24-48 hours)`);
-              
+
               // Notify admins that manual transfer is needed
               try {
                 const { createManualTransferRequiredNotification } = require('../utils/notificationHelper');
@@ -2127,29 +2177,29 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
             } else {
               // Recipient is ready - create payout transfer
               try {
-              omiseTransfer = await paymentService.createPayout(
-                cashReward.amount,
-                recipient.id
-              );
-              
-              // Check transfer status - Omise transfers may use 'paid' or 'sent' boolean fields
-              // Also check if status field exists
-              const isPaid = omiseTransfer.paid === true || omiseTransfer.status === 'paid';
-              const isSent = omiseTransfer.sent === true || omiseTransfer.status === 'sent';
-              
-              if (isPaid || isSent) {
-                transferCompleted = true;
-                console.log(`✅ Omise transfer ${omiseTransfer.id} already completed (paid: ${omiseTransfer.paid}, sent: ${omiseTransfer.sent}, status: ${omiseTransfer.status || 'N/A'})`);
-              } else {
-                const statusInfo = omiseTransfer.status || (omiseTransfer.paid ? 'paid' : omiseTransfer.sent ? 'sent' : 'pending');
-                console.log(`⏳ Omise transfer ${omiseTransfer.id} status: ${statusInfo} - will deduct points when transfer completes`);
-              }
-              
-              // Store Omise transfer ID in cashReward metadata
-              cashReward.metadata.omiseTransferId = omiseTransfer.id;
-              cashReward.metadata.payoutMethod = 'omise';
-              cashReward.metadata.transferStatus = omiseTransfer.status;
-              
+                omiseTransfer = await paymentService.createPayout(
+                  cashReward.amount,
+                  recipient.id
+                );
+
+                // Check transfer status - Omise transfers may use 'paid' or 'sent' boolean fields
+                // Also check if status field exists
+                const isPaid = omiseTransfer.paid === true || omiseTransfer.status === 'paid';
+                const isSent = omiseTransfer.sent === true || omiseTransfer.status === 'sent';
+
+                if (isPaid || isSent) {
+                  transferCompleted = true;
+                  console.log(`✅ Omise transfer ${omiseTransfer.id} already completed (paid: ${omiseTransfer.paid}, sent: ${omiseTransfer.sent}, status: ${omiseTransfer.status || 'N/A'})`);
+                } else {
+                  const statusInfo = omiseTransfer.status || (omiseTransfer.paid ? 'paid' : omiseTransfer.sent ? 'sent' : 'pending');
+                  console.log(`⏳ Omise transfer ${omiseTransfer.id} status: ${statusInfo} - will deduct points when transfer completes`);
+                }
+
+                // Store Omise transfer ID in cashReward metadata
+                cashReward.metadata.omiseTransferId = omiseTransfer.id;
+                cashReward.metadata.payoutMethod = 'omise';
+                cashReward.metadata.transferStatus = omiseTransfer.status;
+
                 console.log(`💰 Omise payout created: Transfer ${omiseTransfer.id} for ${cashReward.amount} THB (status: ${omiseTransfer.status})`);
               } catch (payoutError) {
                 // If payout fails, log but don't fail approval
@@ -2157,7 +2207,7 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
                 cashReward.metadata.omiseError = payoutError.message;
                 cashReward.metadata.payoutFailed = true;
                 cashReward.metadata.requiresManualTransfer = true;
-                
+
                 // Notify all admins that manual transfer is needed
                 try {
                   const { createManualTransferRequiredNotification } = require('../utils/notificationHelper');
@@ -2205,11 +2255,11 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
         relatedId: cashReward._id,
         status: 'pending'
       });
-      
+
       if (pointTransaction) {
         pointTransaction.amount = -cashReward.pointsUsed;
         pointTransaction.status = 'completed';
-        pointTransaction.description = transferCompleted 
+        pointTransaction.description = transferCompleted
           ? `ถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - โอนเงินผ่าน Omise แล้ว`
           : `ถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - อนุมัติแล้ว`;
         // Ensure metadata exists before updating
@@ -2226,14 +2276,14 @@ router.post('/cash-rewards/:id/approve', auth, adminAuth, async (req, res) => {
       // Using Omise but transfer is pending - don't deduct points yet
       // Points will be deducted when transfer webhook confirms payment
       console.log(`⏳ Points NOT deducted yet - waiting for Omise transfer ${omiseTransfer.id} to complete`);
-      
+
       // Update PointTransaction to show pending transfer
       const pointTransaction = await PointTransaction.findOne({
         relatedModel: 'CashReward',
         relatedId: cashReward._id,
         status: 'pending'
       });
-      
+
       if (pointTransaction) {
         pointTransaction.description = `ถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - รอการโอนเงินผ่าน Omise`;
         if (!pointTransaction.metadata) {
@@ -2496,7 +2546,7 @@ router.get('/cash-rewards/:id/recipient-info', auth, adminAuth, async (req, res)
     try {
       const paymentService = require('../services/paymentService');
       const bankAccountInfo = await paymentService.getRecipientBankAccount(recipientId);
-      
+
       return res.json({
         success: true,
         data: bankAccountInfo
@@ -2612,7 +2662,7 @@ router.post('/cash-rewards/:id/pay', auth, adminAuth, async (req, res) => {
     if (adminNotes) {
       cashReward.adminNotes = adminNotes;
     }
-    
+
     // Update metadata to indicate manual transfer
     if (!cashReward.metadata) {
       cashReward.metadata = {};
@@ -2620,7 +2670,7 @@ router.post('/cash-rewards/:id/pay', auth, adminAuth, async (req, res) => {
     cashReward.metadata.manualTransfer = true;
     cashReward.metadata.manualTransferBy = req.user.id;
     cashReward.metadata.manualTransferAt = new Date();
-    
+
     await cashReward.save();
 
     // Send notification to user about payment
@@ -2690,7 +2740,7 @@ router.post('/cash-rewards/:id/reject', auth, adminAuth, async (req, res) => {
       relatedId: cashReward._id,
       status: 'pending'
     });
-    
+
     if (pointTransaction) {
       pointTransaction.status = 'failed'; // Use 'failed' instead of 'rejected' (not in enum: completed, pending, failed, refunded)
       pointTransaction.description = `คำขอถอน Point ${cashReward.pointsUsed.toLocaleString()} (${cashReward.amount.toLocaleString()} บาท) - ถูกปฏิเสธ${reason ? ': ' + reason : ''}`;
@@ -2879,6 +2929,87 @@ router.get('/riders', auth, adminAuth, async (req, res) => {
       success: false,
       message: 'เกิดข้อผิดพลาดในการดึงข้อมูล',
       error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/v2/admin/rider-income
+ * Aggregate rider income (sum of riderFee from delivered deliveries). Optional period for time series.
+ */
+router.get('/rider-income', auth, adminAuth, async (req, res) => {
+  try {
+    const { period = 'daily' } = req.query; // 'daily', 'monthly', 'yearly' or omit for summary only
+
+    const now = new Date();
+    let startDate;
+    let dateFormat;
+    let dateProjection;
+
+    if (period === 'daily') {
+      startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 30);
+      dateFormat = { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } };
+      dateProjection = { $dateToString: { format: '%d/%m/%Y', date: '$createdAt' } };
+    } else if (period === 'monthly') {
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 12);
+      dateFormat = { $dateToString: { format: '%Y-%m', date: '$createdAt' } };
+      dateProjection = { $dateToString: { format: '%m/%Y', date: '$createdAt' } };
+    } else if (period === 'yearly') {
+      startDate = new Date(now);
+      startDate.setFullYear(startDate.getFullYear() - 5);
+      dateFormat = { $dateToString: { format: '%Y', date: '$createdAt' } };
+      dateProjection = { $dateToString: { format: '%Y', date: '$createdAt' } };
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid period. Must be: daily, monthly, or yearly'
+      });
+    }
+
+    const agg = await Delivery.aggregate([
+      {
+        $match: {
+          status: 'delivered',
+          createdAt: { $gte: startDate, $lte: now }
+        }
+      },
+      {
+        $group: {
+          _id: dateFormat,
+          label: { $first: dateProjection },
+          totalEarnings: { $sum: { $ifNull: ['$riderFee', 0] } },
+          deliveryCount: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    const totalEarnings = agg.reduce((sum, item) => sum + item.totalEarnings, 0);
+    const totalDeliveries = agg.reduce((sum, item) => sum + item.deliveryCount, 0);
+
+    res.json({
+      success: true,
+      data: {
+        period,
+        series: agg.map((item) => ({
+          label: item.label,
+          totalEarnings: item.totalEarnings,
+          deliveryCount: item.deliveryCount
+        })),
+        summary: {
+          totalEarnings,
+          totalDeliveries,
+          avgPerDelivery: totalDeliveries > 0 ? Math.round((totalEarnings / totalDeliveries) * 100) / 100 : 0
+        }
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error getting rider income:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'เกิดข้อผิดพลาด'
     });
   }
 });
@@ -3075,7 +3206,7 @@ router.get('/riders/:riderId', auth, adminAuth, async (req, res) => {
 router.get('/settings/point-conversion-rate', async (req, res) => {
   try {
     let rate = await QuestSettings.getSetting('point_conversion_rate');
-    
+
     // If setting doesn't exist, create it with default value 1
     if (rate === null) {
       await QuestSettings.updateSetting('point_conversion_rate', 1, null);

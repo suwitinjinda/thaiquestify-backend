@@ -18,13 +18,15 @@ const userGeneratedQuestsRoutes = require('./routes/userGeneratedQuests');
 
 const app = express();
 
-// --- Debug: Check if environment variables are loaded (Run on Startup) ---
-console.log('🔧 Environment Check:');
-console.log('   FACEBOOK_APP_ID:', process.env.FACEBOOK_APP_ID ? '✓ Loaded' : '✗ MISSING!');
-console.log('   FACEBOOK_APP_SECRET:', process.env.FACEBOOK_CLIENT_SECRET ? '✓ Loaded' : '✗ MISSING!');
-console.log('   JWT_SECRET:', process.env.JWT_SECRET ? '✓ Loaded' : '✗ MISSING!');
-console.log('   NODE_ENV:', process.env.NODE_ENV || 'development');
-console.log('   PORT:', process.env.PORT || 5000);
+// Trust proxy (Nginx sets X-Forwarded-For); required for express-rate-limit behind a proxy
+app.set('trust proxy', 1);
+
+// --- Startup: minimal env check (only in dev or DEBUG=1) ---
+const DEBUG_STARTUP = process.env.DEBUG === '1' || process.env.NODE_ENV !== 'production';
+if (DEBUG_STARTUP) {
+  console.log('🔧 NODE_ENV:', process.env.NODE_ENV || 'development', '| PORT:', process.env.PORT || 5000);
+  if (!process.env.JWT_SECRET) console.warn('⚠️ JWT_SECRET missing');
+}
 
 // ===========================================
 // 2. SYNCHRONOUS MIDDLEWARE SETUP
@@ -47,29 +49,8 @@ app.use('/api/orders', orderLimiter);
 // Note: authenticatedLimiter should be applied to protected routes AFTER auth middleware
 // Example: router.get('/protected', auth, authenticatedLimiter, handler)
 
-// Request logging middleware (for debugging OAuth callbacks)
-app.use((req, res, next) => {
-  // Log Facebook callback requests and ALL auth-related requests
-  if (req.path.includes('facebook') || req.path.includes('auth') || req.path.includes('callback')) {
-    console.log('');
-    console.log('🔍 [REQUEST LOG] ============================================');
-    console.log('   Method:', req.method);
-    console.log('   Path:', req.path);
-    console.log('   Full URL:', req.url);
-    console.log('   Full Request URL:', req.protocol + '://' + req.get('host') + req.originalUrl);
-    console.log('   Has Query:', Object.keys(req.query).length > 0);
-    if (Object.keys(req.query).length > 0) {
-      console.log('   Query:', JSON.stringify(req.query, null, 2));
-    }
-    console.log('   IP:', req.ip || req.connection.remoteAddress);
-    console.log('   User-Agent:', req.headers['user-agent']?.substring(0, 100));
-    console.log('   Referer:', req.headers['referer'] || 'none');
-    console.log('   Origin:', req.headers['origin'] || 'none');
-    console.log('🔍 [REQUEST LOG] ============================================');
-    console.log('');
-  }
-  next();
-});
+// Auth debug: set DEBUG_AUTH=1 to enable verbose OAuth callback logs
+const DEBUG_AUTH = process.env.DEBUG_AUTH === '1';
 
 // Body Parsers (CRITICAL for POST/PUT requests - MUST come before routes)
 // Increase limit to 10MB to handle base64 image uploads
@@ -115,7 +96,7 @@ mongoose.connection.on('disconnected', () => {
 });
 
 mongoose.connection.on('reconnected', () => {
-  console.log('✅ MongoDB reconnected');
+  if (DEBUG_STARTUP) console.log('✅ MongoDB reconnected');
 });
 
 
@@ -138,68 +119,68 @@ app.use('/api/quests', questRoutes);
 // TikTok routes (mounted separately to support /api/tiktok/* paths)
 const tiktokRouter = express.Router();
 tiktokRouter.get('/challenges', auth, async (req, res) => {
-    try {
-        const { limit = 10, sort = 'trending', includeJoined = false } = req.query;
-        
-        // TODO: Implement actual TikTok challenges API integration
-        // For now, return mock/placeholder data
-        const challenges = [
-            {
-                _id: 'challenge1',
-                title: 'TikTok Hashtag Challenge',
-                description: 'สร้างวิดีโอด้วยแฮชแท็ก #ThaiQuestifyChallenge',
-                hashtag: 'ThaiQuestifyChallenge',
-                creator: {
-                    name: 'ทีมงานไทยเควส',
-                    avatarColor: '#EE1D52'
-                },
-                participants: 0,
-                completed: 0,
-                isJoined: includeJoined === 'true' ? false : undefined,
-                points: 100,
-                deadline: null
-            }
-        ];
+  try {
+    const { limit = 10, sort = 'trending', includeJoined = false } = req.query;
 
-        return res.json({
-            success: true,
-            data: {
-                challenges: challenges.slice(0, parseInt(limit)),
-                count: challenges.length
-            }
-        });
-    } catch (error) {
-        console.error('❌ TikTok challenges error:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Failed to get TikTok challenges',
-            error: error.message
-        });
-    }
+    // TODO: Implement actual TikTok challenges API integration
+    // For now, return mock/placeholder data
+    const challenges = [
+      {
+        _id: 'challenge1',
+        title: 'TikTok Hashtag Challenge',
+        description: 'สร้างวิดีโอด้วยแฮชแท็ก #ThaiQuestifyChallenge',
+        hashtag: 'ThaiQuestifyChallenge',
+        creator: {
+          name: 'ทีมงานไทยเควส',
+          avatarColor: '#EE1D52'
+        },
+        participants: 0,
+        completed: 0,
+        isJoined: includeJoined === 'true' ? false : undefined,
+        points: 100,
+        deadline: null
+      }
+    ];
+
+    return res.json({
+      success: true,
+      data: {
+        challenges: challenges.slice(0, parseInt(limit)),
+        count: challenges.length
+      }
+    });
+  } catch (error) {
+    console.error('❌ TikTok challenges error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get TikTok challenges',
+      error: error.message
+    });
+  }
 });
 
 tiktokRouter.post('/challenges/:challengeId/join', auth, async (req, res) => {
-    try {
-        const { challengeId } = req.params;
-        
-        // TODO: Implement actual TikTok challenge join logic
-        // For now, return success response
-        return res.json({
-            success: true,
-            message: 'Joined TikTok challenge successfully',
-            data: {
-                challengeId,
-                joinedAt: new Date()
-            }
-        });
-    } catch (error) {
-        console.error('❌ TikTok challenge join error:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Failed to join TikTok challenge',
-            error: error.message
-        });
-    }
+  try {
+    const { challengeId } = req.params;
+
+    // TODO: Implement actual TikTok challenge join logic
+    // For now, return success response
+    return res.json({
+      success: true,
+      message: 'Joined TikTok challenge successfully',
+      data: {
+        challengeId,
+        joinedAt: new Date()
+      }
+    });
+  } catch (error) {
+    console.error('❌ TikTok challenge join error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to join TikTok challenge',
+      error: error.message
+    });
+  }
 });
 
 app.use('/api/tiktok', tiktokRouter);
@@ -236,7 +217,12 @@ app.use('/api', dashboardRoutes);
 
 // Admin Routes
 const adminRoutes = require('./routes/admin');
+const adminAuth = require('./middleware/adminAuth').adminAuth;
 app.use('/api/v2/admin', adminRoutes);
+
+// Admin: แคมเปญส่งเสริมการขาย (Campaigns)
+const adminCampaignsRoutes = require('./routes/adminCampaigns');
+app.use('/api/v2/admin/campaigns', auth, adminAuth, adminCampaignsRoutes);
 
 // Verification Documents Routes (User)
 const userVerificationDocumentsRoutes = require('./routes/userVerificationDocuments');
@@ -293,6 +279,14 @@ app.use('/api/rider', riderRoutes);
 const shopRequestsRoutes = require('./routes/shopRequests');
 app.use('/api/shop-requests', shopRequestsRoutes);
 
+// Campaigns (public: list by shop; auth: my participations, join)
+const campaignsRoutes = require('./routes/campaigns');
+app.use('/api/campaigns', campaignsRoutes);
+
+// Image proxy (stream GCP shop images so they load when bucket is private)
+const imageProxyRoutes = require('./routes/imageProxy');
+app.use('/api/image-proxy', imageProxyRoutes);
+
 // Shop Routes
 const shopRoutes = require('./routes/shops');
 app.use('/api/shop', shopRoutes);
@@ -326,42 +320,25 @@ app.use('/', privacyRoutes); // Privacy policy and data deletion routes
  * นี่คือขั้นตอนที่แก้ปัญหา "Dismiss" ใน Mobile App (Expo)
  */
 app.get('/auth/callback', async (req, res) => {
-  const { code, error, error_description, state } = req.query; // เพิ่ม state ในการรับค่า
+  const { code, error, error_description, state } = req.query;
 
-  // --- DEBUG LOGS START ---
-  console.log('\n======================================================');
-  console.log('🔄 [AUTH CALLBACK] Request received.');
-  console.log(`   Source IP: ${req.ip}`);
-  console.log(`   Query Params keys: ${Object.keys(req.query)}`);
-  // --- DEBUG LOGS END ---
+  if (DEBUG_AUTH) {
+    console.log('[AUTH] Callback received', { path: req.path, hasCode: !!code, hasError: !!error });
+  }
 
   if (error) {
-    console.error('❌ AUTH ERROR (Facebook/Google):', error, error_description);
+    console.error('❌ AUTH ERROR:', error, error_description);
     const errorUrl = `thaiquestify://auth?error=${encodeURIComponent(error)}&description=${encodeURIComponent(error_description || 'Authentication failed')}`;
     return res.redirect(302, errorUrl);
   }
 
   if (code) {
-    // --- DEBUG LOGS START ---
-    console.log(`✅ [STEP 1] Received Code: ${code.substring(0, 30)}...`);
-    console.log('   [FIX] PKCE requires Client-side Token Exchange.');
-    console.log('   [STEP 2] Performing FINAL HTTP 302 Redirect (Code back to App)...');
-    // --- DEBUG LOGS END ---
-
-    // 1. สร้าง Deep Link URL เพื่อส่ง code และ state กลับไป
-    // สำคัญ: ต้องส่ง state คืนไปด้วยเพื่อให้ expo-auth-session ทำงานได้
     const deepLinkUrl = `thaiquestify://auth?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
-
-    console.log('   Redirect URL:', deepLinkUrl);
-    console.log('======================================================\n');
-
-    // 2. สั่ง HTTP 302 Redirect กลับไปยัง Mobile App
+    if (DEBUG_AUTH) console.log('[AUTH] Redirecting to deep link');
     return res.redirect(302, deepLinkUrl);
   }
 
-  // กรณีที่ไม่พบ Code และไม่มี Error
-  console.log('⚠️ CALLBACK received, but neither Code nor Error found.');
-  console.log('======================================================\n');
+  if (DEBUG_AUTH) console.warn('[AUTH] Callback: no code or error');
   return res.redirect(302, 'thaiquestify://auth?error=unknown_callback');
 });
 
@@ -372,7 +349,33 @@ app.get('/auth/callback', async (req, res) => {
 app.get('/auth/google/callback', (req, res) => {
   const { code, error, state } = req.query;
 
-  // Define your app's deep link URI
+  // Admin web: state starts with admin_web -> exchange code on server and redirect with one-time exchange code (no client storage)
+  if (state && String(state).startsWith('admin_web')) {
+    const adminBase = 'https://thaiquestify.com/admin-web/login';
+    if (error) {
+      return res.redirect(302, `${adminBase}?error=${encodeURIComponent(error)}`);
+    }
+    if (code) {
+      const { exchangeGoogleCodeForUser } = require('./routes/auth');
+      const adminExchangeStore = require('./lib/adminGoogleExchangeStore');
+      exchangeGoogleCodeForUser(code, null)
+        .then(({ token, user }) => {
+          if (user.userType !== 'admin') {
+            return res.redirect(302, `${adminBase}?error=${encodeURIComponent('not_admin')}`);
+          }
+          const exchangeCode = adminExchangeStore.set({ token, user });
+          return res.redirect(302, `${adminBase}?exchange=${encodeURIComponent(exchangeCode)}`);
+        })
+        .catch((err) => {
+          console.error('Admin web Google exchange error:', err.message);
+          return res.redirect(302, `${adminBase}?error=${encodeURIComponent(err.message || 'exchange_failed')}`);
+        });
+      return;
+    }
+    return res.redirect(302, `${adminBase}?error=unknown_response`);
+  }
+
+  // Define your app's deep link URI (mobile)
   // IMPORTANT: This must match the scheme defined in your app.json/app.config.js
   const deepLinkBase = 'thaiquestify://auth/google';
 
@@ -421,43 +424,15 @@ app.get('/auth/google/callback', (req, res) => {
 
 // ===== FACEBOOK CALLBACK (CONNECT FOR QUESTS) =====
 app.get('/auth/facebook/callback', async (req, res) => {
-  console.log('');
-  console.log('🔔 [DEBUG] ============================================');
-  console.log('🔔 [DEBUG] ============================================');
-  console.log('🔔 [DEBUG] ✅✅✅ FACEBOOK CALLBACK ROUTE CALLED ✅✅✅');
-  console.log('🔔 [DEBUG] ============================================');
-  console.log('🔔 [DEBUG] ============================================');
-  console.log('   Method:', req.method);
-  console.log('   Path:', req.path);
-  console.log('   Full URL:', req.url);
-  console.log('   Full Request URL:', req.protocol + '://' + req.get('host') + req.originalUrl);
-  console.log('   Has Code:', !!req.query.code);
-  console.log('   Code Length:', req.query.code?.length || 0);
-  console.log('   Has State:', !!req.query.state);
-  console.log('   State Length:', req.query.state?.length || 0);
-  console.log('   Has Error:', !!req.query.error);
-  console.log('   Error:', req.query.error);
-  console.log('   Error Description:', req.query.error_description);
-  console.log('   Query Params:', JSON.stringify(req.query, null, 2));
-  console.log('   Headers:', {
-    'user-agent': req.headers['user-agent']?.substring(0, 80),
-    'referer': req.headers['referer'],
-    'origin': req.headers['origin'],
-  });
-  console.log('🔔 [DEBUG] ============================================');
-  console.log('🔔 [DEBUG] ============================================');
-  console.log('');
+  if (DEBUG_AUTH) {
+    console.log('[FB] Callback', { hasCode: !!req.query.code, hasError: !!req.query.error });
+  }
 
   const { code, error, error_description, state } = req.query;
   const deepLinkBase = 'thaiquestify://integrations/facebook';
 
   if (error) {
-    console.log('❌ [DEBUG] ============================================');
-    console.log('❌ [DEBUG] Facebook Callback - Error from Facebook');
-    console.log('❌ [DEBUG] ============================================');
-    console.log('   Error:', error);
-    console.log('   Error Description:', error_description);
-    console.log('❌ [DEBUG] ============================================');
+    console.error('❌ [FB] Callback error:', error, error_description);
 
     let errorMessage = error_description || 'Facebook authentication failed';
     let errorCode = error;
@@ -505,7 +480,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
   }
 
   if (!code || !state) {
-    console.log('❌ [DEBUG] Facebook Callback - Missing code or state');
+    if (DEBUG_AUTH) console.warn('[FB] Missing code or state');
     return res.redirect(302, `${deepLinkBase}?success=0&error=missing_code_or_state`);
   }
 
@@ -513,32 +488,14 @@ app.get('/auth/facebook/callback', async (req, res) => {
   let decoded;
   try {
     const JWT_SECRET = process.env.JWT_SECRET || 'your-fallback-secret-key-for-development';
-    console.log('🔐 [DEBUG] Verifying state JWT:', {
-      stateLength: state?.length,
-      hasJWTSecret: !!JWT_SECRET,
-    });
     decoded = require("jsonwebtoken").verify(state, JWT_SECRET);
 
-    console.log('✅ [DEBUG] State JWT decoded:', {
-      hasDecoded: !!decoded,
-      purpose: decoded?.purpose,
-      userId: decoded?.userId,
-    });
-
     if (!decoded || decoded.purpose !== 'facebook_connect' || !decoded.userId) {
-      console.log('❌ [DEBUG] Invalid state JWT:', {
-        hasDecoded: !!decoded,
-        purpose: decoded?.purpose,
-        expectedPurpose: 'facebook_connect',
-        userId: decoded?.userId,
-      });
+      if (DEBUG_AUTH) console.warn('[FB] Invalid state JWT');
       return res.redirect(302, `${deepLinkBase}?success=0&error=invalid_state`);
     }
   } catch (e) {
-    console.error('❌ [DEBUG] State JWT verification failed:', {
-      error: e.message,
-      stack: e.stack,
-    });
+    console.error('❌ [FB] State JWT verification failed:', e.message);
     return res.redirect(302, `${deepLinkBase}?success=0&error=invalid_state`);
   }
 
@@ -547,18 +504,12 @@ app.get('/auth/facebook/callback', async (req, res) => {
   const FACEBOOK_REDIRECT_URI = process.env.FACEBOOK_REDIRECT_URI || 'https://thaiquestify.com/auth/facebook/callback';
 
   if (!FACEBOOK_APP_ID || !FACEBOOK_APP_SECRET) {
-    console.log('❌ [DEBUG] Missing Facebook credentials');
+    console.error('❌ [FB] Missing Facebook credentials');
     return res.redirect(302, `${deepLinkBase}?success=0&error=missing_facebook_credentials`);
   }
 
   try {
-    console.log('🔄 [DEBUG] Starting Facebook token exchange:', {
-      hasAppId: !!FACEBOOK_APP_ID,
-      hasAppSecret: !!FACEBOOK_APP_SECRET,
-      hasCode: !!code,
-      codeLength: code?.length,
-      redirectUri: FACEBOOK_REDIRECT_URI,
-    });
+    if (DEBUG_AUTH) console.log('[FB] Token exchange starting');
 
     // Exchange code -> access token
     const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?` +
@@ -570,64 +521,29 @@ app.get('/auth/facebook/callback', async (req, res) => {
     let tokenResp;
     try {
       tokenResp = await axios.get(tokenUrl);
-      console.log('✅ [DEBUG] Facebook Token Exchange Success:', {
-        hasData: !!tokenResp.data,
-        hasAccessToken: !!tokenResp.data?.access_token,
-        responseStatus: tokenResp.status,
-      });
     } catch (error) {
-      console.error('❌ [DEBUG] Facebook Token Exchange Error:', {
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        errorData: error.response?.data,
-        message: error.message,
-      });
+      console.error('❌ [FB] Token exchange failed:', error.response?.status, error.message);
       throw error;
     }
 
     const { access_token: accessToken, expires_in: expiresIn } = tokenResp.data || {};
 
     if (!accessToken) {
-      console.error('❌ [DEBUG] No access token in response:', tokenResp.data);
+      console.error('❌ [FB] No access token in response');
       throw new Error('No access token received');
     }
-
-    console.log('🔍 [DEBUG] Access token received, fetching user info...');
 
     // Fetch user info - include link field to get public profile URL
     const userInfoUrl = `https://graph.facebook.com/v18.0/me?fields=id,name,email,picture,link&access_token=${encodeURIComponent(accessToken)}`;
     let userInfoResp;
     try {
       userInfoResp = await axios.get(userInfoUrl);
-      console.log('✅ [DEBUG] User info fetched:', {
-        hasData: !!userInfoResp.data,
-        userId: userInfoResp.data?.id,
-        name: userInfoResp.data?.name,
-        link: userInfoResp.data?.link,
-      });
     } catch (error) {
-      console.error('❌ [DEBUG] Error fetching user info:', {
-        status: error.response?.status,
-        errorData: error.response?.data,
-        message: error.message,
-      });
+      console.error('❌ [FB] Fetch user info failed:', error.response?.status, error.message);
       throw error;
     }
 
     const userInfo = userInfoResp.data;
-
-    // ✅ Removed account type check logic
-    // Simply save Facebook data after fetching from /me endpoint
-    // Note: If we need to support Pages in the future, we'll need a separate flow with Page access token
-
-    console.log('🔍 [DEBUG] Facebook User Info:', {
-      id: userInfo.id,
-      name: userInfo.name,
-      email: userInfo.email,
-      link: userInfo.link,
-      hasPicture: !!userInfo.picture,
-      pictureUrl: userInfo.picture?.data?.url,
-    });
 
     // Use link field (public profile URL) if available, otherwise fallback to profile.php?id format
     const profileUrl = userInfo.link || `https://www.facebook.com/profile.php?id=${userInfo.id}`;
@@ -636,7 +552,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
     const user = await User.findById(decoded.userId);
 
     if (user) {
-      console.log('💾 [DEBUG] Saving Facebook integration to database...');
       user.integrations = user.integrations || {};
       user.integrations.facebook = {
         connectedAt: new Date(),
@@ -651,22 +566,12 @@ app.get('/auth/facebook/callback', async (req, res) => {
         accountType: null, // Not checking account type anymore - just save the data
       };
       await user.save();
-      console.log('✅ [DEBUG] ============================================');
-      console.log('✅ [DEBUG] Facebook integration saved successfully');
-      console.log('✅ [DEBUG] ============================================');
-      console.log('   User ID:', userInfo.id);
-      console.log('   Name:', userInfo.name);
-      console.log('   Profile URL:', user.integrations.facebook.profileUrl);
-      console.log('✅ [DEBUG] ============================================');
+      if (DEBUG_AUTH) console.log('[FB] Integration saved for user', decoded.userId);
     } else {
-      console.error('❌ [DEBUG] User not found:', decoded.userId);
+      console.error('❌ [FB] User not found:', decoded.userId);
     }
 
     const deepLinkUrl = `${deepLinkBase}?success=1`;
-    console.log('🔔 [DEBUG] ============================================');
-    console.log('🔔 [DEBUG] Redirecting to deep link');
-    console.log('🔔 [DEBUG] Deep Link URL:', deepLinkUrl);
-    console.log('🔔 [DEBUG] ============================================');
 
     // Use a more aggressive redirect approach
     const htmlResponse = `
@@ -738,17 +643,12 @@ app.get('/auth/facebook/callback', async (req, res) => {
             <a href="${deepLinkUrl}" class="btn" id="manualLink" onclick="window.location.href='${deepLinkUrl}'; return false;">คลิกที่นี่หากไม่ถูกนำกลับโดยอัตโนมัติ</a>
           </div>
           <script>
-            console.log('🔔 [DEBUG] HTML Redirect Page Loaded');
-            console.log('🔔 [DEBUG] Deep Link URL:', '${deepLinkUrl}');
-            
             const deepLink = '${deepLinkUrl}';
             let redirectAttempts = 0;
             const maxAttempts = 5;
             
             function attemptRedirect() {
               redirectAttempts++;
-              console.log('🔔 [DEBUG] Redirect attempt #' + redirectAttempts);
-              
               const statusEl = document.getElementById('status');
               if (statusEl) {
                 statusEl.textContent = 'กำลัง redirect... (ครั้งที่ ' + redirectAttempts + ')';
@@ -791,7 +691,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
                   statusEl.textContent = 'กรุณาคลิกปุ่มด้านล่างเพื่อกลับไปที่แอป';
                   statusEl.style.color = '#ff6b6b';
                 }
-                console.warn('⚠️ Max redirect attempts reached');
               }
             }, 200); // Faster retry (200ms instead of 500ms)
             
@@ -845,7 +744,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
     res.set('Content-Type', 'text/html; charset=UTF-8');
     return res.status(200).send(htmlResponse);
   } catch (e) {
-    console.error('❌ [DEBUG] Facebook callback error:', {
+    console.error('❌ [FB] Callback error:', {
       error: e.message,
       responseStatus: e?.response?.status,
       responseData: e?.response?.data,
@@ -860,26 +759,16 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
 // ===== TIKTOK CALLBACK (CONNECT FOR QUESTS) =====
 app.get('/auth/tiktok/callback', async (req, res) => {
-  console.log('🔔 [DEBUG] TikTok Callback Route Called:', {
-    method: req.method,
-    path: req.path,
-    query: req.query,
-    hasCode: !!req.query.code,
-    hasState: !!req.query.state,
-    hasError: !!req.query.error,
-    error: req.query.error,
-    errorDescription: req.query.error_description,
-  });
+  if (DEBUG_AUTH) {
+    console.log('[TikTok] Callback', { hasCode: !!req.query.code, hasError: !!req.query.error });
+  }
 
   const { code, error, error_description, state } = req.query;
 
   const deepLinkBase = 'thaiquestify://integrations/tiktok';
 
   if (error) {
-    console.log('❌ [DEBUG] TikTok Callback - Error from TikTok:', {
-      error,
-      errorDescription: error_description,
-    });
+    console.error('❌ [TikTok] Callback error:', error, error_description);
     const deepLinkUrl =
       `${deepLinkBase}?success=0&error=${encodeURIComponent(error)}` +
       `&description=${encodeURIComponent(error_description || 'TikTok authentication failed')}`;
@@ -887,51 +776,22 @@ app.get('/auth/tiktok/callback', async (req, res) => {
   }
 
   if (!code || !state) {
-    console.log('❌ [DEBUG] TikTok Callback - Missing code or state:', {
-      hasCode: !!code,
-      hasState: !!state,
-      codeLength: code?.length,
-      stateLength: state?.length,
-    });
+    if (DEBUG_AUTH) console.warn('[TikTok] Missing code or state');
     return res.redirect(302, `${deepLinkBase}?success=0&error=missing_code_or_state`);
   }
-
-  console.log('✅ [DEBUG] TikTok Callback - Starting token exchange:', {
-    codeLength: code?.length,
-    stateLength: state?.length,
-  });
 
   // Verify signed state to get userId
   let decoded;
   try {
     const JWT_SECRET = process.env.JWT_SECRET || 'your-fallback-secret-key-for-development';
-    console.log('🔐 [DEBUG] Verifying state JWT:', {
-      stateLength: state?.length,
-      hasJWTSecret: !!JWT_SECRET,
-    });
-
     decoded = require('jsonwebtoken').verify(state, JWT_SECRET);
 
-    console.log('✅ [DEBUG] State JWT decoded:', {
-      hasDecoded: !!decoded,
-      purpose: decoded?.purpose,
-      userId: decoded?.userId,
-    });
-
     if (!decoded || decoded.purpose !== 'tiktok_connect' || !decoded.userId) {
-      console.log('❌ [DEBUG] Invalid state JWT:', {
-        hasDecoded: !!decoded,
-        purpose: decoded?.purpose,
-        expectedPurpose: 'tiktok_connect',
-        userId: decoded?.userId,
-      });
+      if (DEBUG_AUTH) console.warn('[TikTok] Invalid state JWT');
       return res.redirect(302, `${deepLinkBase}?success=0&error=invalid_state`);
     }
   } catch (e) {
-    console.error('❌ [DEBUG] State JWT verification failed:', {
-      error: e.message,
-      stack: e.stack,
-    });
+    console.error('❌ [TikTok] State JWT verification failed:', e.message);
     return res.redirect(302, `${deepLinkBase}?success=0&error=invalid_state`);
   }
 
@@ -954,13 +814,7 @@ app.get('/auth/tiktok/callback', async (req, res) => {
       redirect_uri: TIKTOK_REDIRECT_URI,
     }).toString();
 
-    console.log('🔄 [DEBUG] TikTok Token Exchange Request:', {
-      hasClientKey: !!TIKTOK_CLIENT_KEY,
-      hasClientSecret: !!TIKTOK_CLIENT_SECRET,
-      hasCode: !!code,
-      redirectUri: TIKTOK_REDIRECT_URI,
-      codeLength: code?.length,
-    });
+    if (DEBUG_AUTH) console.log('[TikTok] Token exchange starting');
 
     let tokenResp;
     try {
@@ -973,29 +827,8 @@ app.get('/auth/tiktok/callback', async (req, res) => {
         }
       );
 
-      console.log('✅ [DEBUG] TikTok Token Exchange Success:', {
-        hasData: !!tokenResp.data,
-        hasAccessToken: !!tokenResp.data?.access_token,
-        hasOpenId: !!tokenResp.data?.open_id,
-        responseStatus: tokenResp.status,
-      });
     } catch (error) {
-      console.error('❌ [DEBUG] TikTok Token Exchange Error Details:', {
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        errorCode: error.response?.data?.error,
-        errorDescription: error.response?.data?.error_description,
-        errorDetails: error.response?.data?.error_details,
-        fullResponseData: JSON.stringify(error.response?.data, null, 2),
-        requestData: {
-          redirectUri: TIKTOK_REDIRECT_URI,
-          codeLength: code?.length,
-          hasClientKey: !!TIKTOK_CLIENT_KEY,
-          hasClientSecret: !!TIKTOK_CLIENT_SECRET,
-        },
-        message: error.message,
-        stack: error.stack,
-      });
+      console.error('❌ [TikTok] Token exchange failed:', error.response?.status, error.response?.data?.error, error.message);
       throw error;
     }
 
@@ -1006,31 +839,9 @@ app.get('/auth/tiktok/callback', async (req, res) => {
     const openId = tokenData.open_id;
     const scope = tokenData.scope;
 
-    // 🐛 DEBUG: Log token response data
-    console.log('🔍 [DEBUG] TikTok OAuth Callback - Token Data:', {
-      hasAccessToken: !!accessToken,
-      hasRefreshToken: !!refreshToken,
-      openId: openId,
-      'openId type': typeof openId,
-      'openId length': openId?.length,
-      scope: scope,
-      expiresIn: expiresIn,
-      allTokenFields: Object.keys(tokenData),
-      fullTokenData: JSON.stringify({
-        ...tokenData,
-        access_token: accessToken ? '[REDACTED]' : null,
-        refresh_token: refreshToken ? '[REDACTED]' : null,
-      }, null, 2),
-    });
-
     // Validate required fields
     if (!accessToken || !openId) {
-      console.error('❌ [DEBUG] Missing required token fields:', {
-        hasAccessToken: !!accessToken,
-        hasOpenId: !!openId,
-        tokenDataKeys: Object.keys(tokenData),
-        fullTokenResponse: JSON.stringify(tokenData, null, 2),
-      });
+      console.error('❌ [TikTok] Missing access_token or open_id in token response');
       throw new Error('Token exchange returned incomplete data: missing access_token or open_id');
     }
 
@@ -1053,21 +864,8 @@ app.get('/auth/tiktok/callback', async (req, res) => {
       unionId = u.union_id || null;
       username = u.username || null; // Get actual username (e.g., "noom2419")
 
-      // If username not in API response, try to extract from profile URL or use displayName
-      // Note: TikTok API may not always return username, so we may need to extract it differently
-
-      // 🐛 DEBUG: Log user info from API
-      console.log('🔍 [DEBUG] TikTok User Info API Response:', {
-        openIdFromAPI: u.open_id,
-        username: username,
-        displayName: displayName,
-        unionId: unionId,
-        avatarUrl: avatarUrl,
-        allUserFields: Object.keys(u),
-        fullUserData: JSON.stringify(u, null, 2),
-      });
     } catch (e) {
-      console.log('⚠️ TikTok user info fetch failed:', e?.message || e);
+      if (DEBUG_AUTH) console.warn('[TikTok] User info fetch failed:', e?.message || e);
     }
 
     // Fetch stats if scope includes user.info.stats
@@ -1088,7 +886,7 @@ app.get('/auth/tiktok/callback', async (req, res) => {
           updatedAt: new Date(),
         };
       } catch (e) {
-        console.log('⚠️ TikTok stats fetch failed during connection:', e?.message || e);
+        if (DEBUG_AUTH) console.warn('[TikTok] Stats fetch failed:', e?.message || e);
       }
     }
 
@@ -1112,26 +910,9 @@ app.get('/auth/tiktok/callback', async (req, res) => {
         lastStatsUpdate: stats ? new Date() : null,
       };
 
-      // 🐛 DEBUG: Log data being saved to database
-      console.log('💾 [DEBUG] TikTok OAuth Callback - Saving to database:', {
-        userId: user._id,
-        tiktokData: JSON.stringify(tiktokData, null, 2),
-        openId: tiktokData.openId,
-        displayName: tiktokData.displayName,
-        'openId type': typeof tiktokData.openId,
-        'openId length': tiktokData.openId?.length,
-      });
-
       user.integrations.tiktok = tiktokData;
       await user.save();
-
-      // 🐛 DEBUG: Verify what was saved
-      const savedUser = await User.findById(user._id).select('integrations.tiktok');
-      console.log('✅ [DEBUG] TikTok OAuth Callback - Verified saved data:', {
-        savedOpenId: savedUser?.integrations?.tiktok?.openId,
-        savedDisplayName: savedUser?.integrations?.tiktok?.displayName,
-        fullSavedTiktok: JSON.stringify(savedUser?.integrations?.tiktok, null, 2),
-      });
+      if (DEBUG_AUTH) console.log('[TikTok] Integration saved for user', decoded.userId);
     }
 
     const deepLinkUrl = `${deepLinkBase}?success=1`;
@@ -1157,7 +938,7 @@ app.get('/auth/tiktok/callback', async (req, res) => {
     res.set('Content-Type', 'text/html');
     return res.send(htmlResponse);
   } catch (e) {
-    console.error('❌ [DEBUG] TikTok callback error:', {
+    console.error('❌ [TikTok] Callback error:', {
       error: e?.message,
       responseStatus: e?.response?.status,
       responseData: e?.response?.data,
@@ -1183,11 +964,14 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Welcome to Thaiquestify API',
-    version: '1.0.0',
-  });
+// Favicon – return 204 to avoid 404 from browsers/crawlers
+app.get('/favicon.ico', (req, res) => {
+  res.status(204).end();
+});
+
+// Sitemap – API has no sitemap; return 204 to avoid 404 from crawlers
+app.get('/sitemap.xml', (req, res) => {
+  res.status(204).end();
 });
 
 // Test endpoint to verify Facebook callback route is accessible
@@ -1236,9 +1020,9 @@ const orderCancellationService = require('./services/orderCancellationService');
 let Cron;
 try {
   Cron = require('croner');
-  console.log('✅ Croner loaded successfully');
+  if (DEBUG_STARTUP) console.log('✅ Croner loaded');
 } catch (error) {
-  console.warn('⚠️ Croner not available, using setInterval fallback');
+  if (DEBUG_STARTUP) console.warn('⚠️ Croner not available, using setInterval fallback');
   Cron = null;
 }
 
@@ -1248,40 +1032,33 @@ function setupOrderCancellationCron() {
   if (Cron) {
     // Use croner for precise scheduling
     const job = Cron('1 0 * * *', async () => {
-      console.log('🔄 Running scheduled order cancellation (daily at 00:01 AM)...');
       try {
         await orderCancellationService.cancelAgingOrders();
       } catch (error) {
         console.error('❌ Error in scheduled order cancellation:', error);
       }
     });
-    console.log('⏰ Order cancellation cron scheduled: Daily at 00:01 AM');
+    if (DEBUG_STARTUP) console.log('⏰ Order cancellation: daily 00:01');
   } else {
     // Fallback to setInterval
-    console.log('⏰ Using setInterval fallback for order cancellation');
-    
+    if (DEBUG_STARTUP) console.log('⏰ Order cancellation: setInterval fallback');
+
     // Calculate milliseconds until next midnight + 1 minute
     const now = new Date();
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(0, 1, 0, 0); // 00:01 AM
-    
-    const msUntilMidnight = tomorrow.getTime() - now.getTime();
-    
-    console.log(`   Next run: ${tomorrow.toISOString()} (in ${Math.round(msUntilMidnight / 1000 / 60)} minutes)`);
-    
+
     // Run after calculated delay, then every 24 hours
     setTimeout(async () => {
-      console.log('🔄 Running scheduled order cancellation (daily at 00:01 AM)...');
       try {
         await orderCancellationService.cancelAgingOrders();
       } catch (error) {
         console.error('❌ Error in scheduled order cancellation:', error);
       }
-      
+
       // Then schedule to run every 24 hours
       const orderCancellationInterval = setInterval(async () => {
-        console.log('🔄 Running scheduled order cancellation (daily at 00:01 AM)...');
         try {
           await orderCancellationService.cancelAgingOrders();
         } catch (error) {
@@ -1289,7 +1066,7 @@ function setupOrderCancellationCron() {
           // Don't let errors crash the interval - continue running
         }
       }, 24 * 60 * 60 * 1000); // Every 24 hours
-      
+
       // Store interval reference for potential cleanup
       if (global.orderCancellationInterval) {
         clearInterval(global.orderCancellationInterval);
@@ -1297,16 +1074,15 @@ function setupOrderCancellationCron() {
       global.orderCancellationInterval = orderCancellationInterval;
     }, msUntilMidnight);
   }
-  
-  // Run immediately on startup (for testing/debugging)
+
+  // Run immediately on startup (5s delay)
   setTimeout(async () => {
-    console.log('🔄 Running initial order cancellation check...');
     try {
       await orderCancellationService.cancelAgingOrders();
     } catch (error) {
       console.error('❌ Error in initial order cancellation:', error);
     }
-  }, 5000); // Run 5 seconds after startup
+  }, 5000);
 }
 
 // Setup cron job
@@ -1319,17 +1095,16 @@ setupOrderCancellationCron();
 // and cancel them automatically
 function setupDeliveryRequestTimeoutCheck() {
   const deliveryAssignmentService = require('./services/deliveryAssignmentService');
-  
+
   // Run immediately on startup (after 10 seconds to let server initialize)
   setTimeout(async () => {
-    console.log('🔄 Running initial delivery request timeout check...');
     try {
       await deliveryAssignmentService.checkAndCancelOldPendingRequests();
     } catch (error) {
       console.error('❌ Error in initial delivery request timeout check:', error);
     }
   }, 10000); // Run 10 seconds after startup
-  
+
   // Then run every minute
   const deliveryInterval = setInterval(async () => {
     try {
@@ -1339,14 +1114,14 @@ function setupDeliveryRequestTimeoutCheck() {
       // Don't let errors crash the interval - continue running
     }
   }, 60 * 1000); // Every 1 minute
-  
+
   // Store interval reference for potential cleanup
   if (global.deliveryInterval) {
     clearInterval(global.deliveryInterval);
   }
   global.deliveryInterval = deliveryInterval;
-  
-  console.log('⏰ Delivery request timeout check scheduled: Every 1 minute');
+
+  if (DEBUG_STARTUP) console.log('⏰ Delivery timeout check: every 1 min');
 }
 
 // Setup delivery request timeout check
@@ -1359,17 +1134,16 @@ setupDeliveryRequestTimeoutCheck();
 // This ensures consistency - if request is cancelled/expired, order should be cancelled too
 function setupCancelledRequestsCleanup() {
   const deliveryAssignmentService = require('./services/deliveryAssignmentService');
-  
+
   // Run immediately on startup (after 15 seconds to let server initialize)
   setTimeout(async () => {
-    console.log('🔄 Running initial cancelled requests cleanup check...');
     try {
       await deliveryAssignmentService.checkAndCancelOrdersForCancelledRequests();
     } catch (error) {
       console.error('❌ Error in initial cancelled requests cleanup:', error);
     }
-  }, 15000); // Run 15 seconds after startup
-  
+  }, 15000);
+
   // Then run every 5 minutes
   setInterval(async () => {
     try {
@@ -1378,8 +1152,8 @@ function setupCancelledRequestsCleanup() {
       console.error('❌ Error in cancelled requests cleanup:', error);
     }
   }, 5 * 60 * 1000); // Every 5 minutes
-  
-  console.log('⏰ Cancelled requests cleanup scheduled: Every 5 minutes');
+
+  if (DEBUG_STARTUP) console.log('⏰ Cancelled requests cleanup: every 5 min');
 }
 
 // Setup cancelled requests cleanup
@@ -1413,6 +1187,5 @@ process.on('uncaughtException', (error) => {
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🚀 Server on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
 });
